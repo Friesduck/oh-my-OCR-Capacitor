@@ -10,7 +10,6 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
-import android.os.Debug
 import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.system.Os
@@ -32,11 +31,13 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 @CapacitorPlugin(name = "NativeOcr")
 class OcrPlugin : Plugin() {
     private val executor = Executors.newSingleThreadExecutor()
     private val recognitionInProgress = AtomicBoolean(false)
+    private val diagnosticRecognitionSequence = AtomicInteger(0)
 
     @Volatile
     private var selectedImageUri: Uri? = null
@@ -49,6 +50,9 @@ class OcrPlugin : Plugin() {
 
     @Volatile
     private var diagnosticsEnabled = false
+
+    @Volatile
+    private var lastResourcesReleasedAtNs = 0L
 
     @PluginMethod
     fun pickImage(call: PluginCall) {
@@ -138,6 +142,58 @@ class OcrPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun captureMemoryDiagnostics(call: PluginCall) {
+        val stage = call.getString("stage")
+            ?.takeIf { it.matches(DIAGNOSTIC_STAGE_PATTERN) }
+            ?: "manual"
+        val expectedRecognitionId = call.getInt("recognitionId")
+
+        executor.execute {
+            val currentRecognitionId = diagnosticRecognitionSequence.get()
+            val skipReason = when {
+                !diagnosticsEnabled -> "diagnosticsDisabled"
+                recognitionInProgress.get() -> "recognitionInProgress"
+                expectedRecognitionId != null && expectedRecognitionId != currentRecognitionId -> {
+                    "newerRecognitionStarted"
+                }
+                else -> null
+            }
+
+            if (skipReason != null) {
+                call.resolve(
+                    JSObject().apply {
+                        put("skipped", true)
+                        put("reason", skipReason)
+                        put("recognitionId", currentRecognitionId)
+                    },
+                )
+                return@execute
+            }
+
+            val releasedAtNs = lastResourcesReleasedAtNs
+            val sinceReleaseMs = if (releasedAtNs > 0L) elapsedMs(releasedAtNs) else -1L
+            call.resolve(
+                JSObject().apply {
+                    put("skipped", false)
+                    put("recognitionId", currentRecognitionId)
+                    put("modelIsWarm", modelIsWarm)
+                    put("sinceReleaseMs", sinceReleaseMs)
+                    put("environment", MemoryDiagnostics.environment())
+                    put(
+                        "snapshot",
+                        MemoryDiagnostics.capture(
+                            context.applicationContext,
+                            stage,
+                            sinceReleaseMs,
+                            true,
+                        ),
+                    )
+                },
+            )
+        }
+    }
+
+    @PluginMethod
     fun recognizeSelected(call: PluginCall) {
         val uri = selectedImageUri
         if (uri == null) {
@@ -148,6 +204,7 @@ class OcrPlugin : Plugin() {
             call.reject("已有识别任务正在运行")
             return
         }
+        val recognitionId = diagnosticRecognitionSequence.incrementAndGet()
 
         executor.execute {
             val requestStartedAtNs = SystemClock.elapsedRealtimeNanos()
@@ -163,6 +220,7 @@ class OcrPlugin : Plugin() {
                     "requestReceived",
                     requestStartedAtNs,
                     collectDiagnostics,
+                    true,
                 )
 
                 val imageReadStartedAtNs = SystemClock.elapsedRealtimeNanos()
@@ -177,8 +235,12 @@ class OcrPlugin : Plugin() {
                 )
 
                 val imageDecodeStartedAtNs = SystemClock.elapsedRealtimeNanos()
-                val decodedBitmap = decodeSampledBitmap(bytes, MAX_DECODE_SIDE)
+                val decodedImage = decodeSampledBitmap(bytes, MAX_DECODE_SIDE)
+                val decodedBitmap = decodedImage.bitmap
                 val imageDecodeMs = elapsedMs(imageDecodeStartedAtNs)
+                val decodedWidth = decodedBitmap.width
+                val decodedHeight = decodedBitmap.height
+                val decodedBitmapBytes = decodedBitmap.allocationByteCount.toLong()
 
                 val orientationStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val orientedBitmap = try {
@@ -188,6 +250,9 @@ class OcrPlugin : Plugin() {
                     throw error
                 }
                 bitmap = orientedBitmap
+                val orientedWidth = orientedBitmap.width
+                val orientedHeight = orientedBitmap.height
+                val orientedBitmapBytes = orientedBitmap.allocationByteCount.toLong()
                 val orientationMs = elapsedMs(orientationStartedAtNs)
                 captureMemorySnapshot(
                     memorySnapshots,
@@ -205,13 +270,14 @@ class OcrPlugin : Plugin() {
                     "engineReady",
                     requestStartedAtNs,
                     collectDiagnostics,
+                    true,
                 )
 
                 val inferenceStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val nativeResult = engine.detect(
                     orientedBitmap,
                     false,
-                    1600,
+                    OCR_MAX_SIDE_LEN,
                     50,
                     0.5f,
                     0.3f,
@@ -226,9 +292,13 @@ class OcrPlugin : Plugin() {
                     "inferenceComplete",
                     requestStartedAtNs,
                     collectDiagnostics,
+                    true,
                 )
 
                 val postprocessStartedAtNs = SystemClock.elapsedRealtimeNanos()
+                val resultBitmapBytes = nativeResult.boxImage.allocationByteCount.toLong()
+                val detectionCount = nativeResult.detResults.size
+                val recognitionCount = nativeResult.recResults.size
                 val textLines = try {
                     composeTextLines(nativeResult)
                 } finally {
@@ -244,16 +314,33 @@ class OcrPlugin : Plugin() {
                 imageBytes = null
                 bitmap.recycleSafely()
                 bitmap = null
+                lastResourcesReleasedAtNs = SystemClock.elapsedRealtimeNanos()
                 captureMemorySnapshot(
                     memorySnapshots,
                     "resourcesReleased",
                     requestStartedAtNs,
                     collectDiagnostics,
+                    true,
                 )
 
                 val metrics = JSObject().apply {
+                    put("recognitionId", recognitionId)
                     put("startedAtEpochMs", startedAtEpochMs)
                     put("modelWasLoaded", modelWasLoaded)
+                    put("sourceImageBytes", bytes.size)
+                    put("sourceWidth", decodedImage.sourceWidth)
+                    put("sourceHeight", decodedImage.sourceHeight)
+                    put("decodeSampleSize", decodedImage.sampleSize)
+                    put("decodedWidth", decodedWidth)
+                    put("decodedHeight", decodedHeight)
+                    put("decodedBitmapBytes", decodedBitmapBytes)
+                    put("orientedWidth", orientedWidth)
+                    put("orientedHeight", orientedHeight)
+                    put("orientedBitmapBytes", orientedBitmapBytes)
+                    put("resultBitmapBytes", resultBitmapBytes)
+                    put("detectionCount", detectionCount)
+                    put("recognitionCount", recognitionCount)
+                    put("ocrMaxSideLen", OCR_MAX_SIDE_LEN)
                     put("imageReadMs", imageReadMs)
                     put("imageDecodeMs", imageDecodeMs)
                     put("orientationMs", orientationMs)
@@ -313,6 +400,7 @@ class OcrPlugin : Plugin() {
         ocrEngine = null
         modelIsWarm = false
         diagnosticsEnabled = false
+        lastResourcesReleasedAtNs = 0L
         executor.shutdownNow()
         super.handleOnDestroy()
     }
@@ -397,7 +485,7 @@ class OcrPlugin : Plugin() {
     }
 
     private fun createPreview(imageBytes: ByteArray): PreviewResult {
-        val decodedBitmap = decodeSampledBitmap(imageBytes, MAX_PREVIEW_SIDE)
+        val decodedBitmap = decodeSampledBitmap(imageBytes, MAX_PREVIEW_SIDE).bitmap
         val orientedBitmap = try {
             applyExifOrientation(decodedBitmap, imageBytes)
         } catch (error: Throwable) {
@@ -432,7 +520,7 @@ class OcrPlugin : Plugin() {
             ?: error("请选择有效的 JPG、PNG 或 WEBP 图片")
     }
 
-    private fun decodeSampledBitmap(imageBytes: ByteArray, maxSide: Int): Bitmap {
+    private fun decodeSampledBitmap(imageBytes: ByteArray, maxSide: Int): DecodedBitmap {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, bounds)
 
@@ -455,8 +543,14 @@ class OcrPlugin : Plugin() {
             inSampleSize = sampleSize
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
+        val bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, options)
             ?: error("无法解码图片，请选择有效图片")
+        return DecodedBitmap(
+            bitmap = bitmap,
+            sourceWidth = bounds.outWidth,
+            sourceHeight = bounds.outHeight,
+            sampleSize = sampleSize,
+        )
     }
 
     private fun applyExifOrientation(bitmap: Bitmap, imageBytes: ByteArray): Bitmap {
@@ -540,22 +634,17 @@ class OcrPlugin : Plugin() {
         stage: String,
         requestStartedAtNs: Long,
         enabled: Boolean,
+        deep: Boolean = false,
     ) {
-        if (enabled) target.put(memorySnapshot(stage, requestStartedAtNs))
-    }
-
-    private fun memorySnapshot(stage: String, requestStartedAtNs: Long): JSObject {
-        val runtime = Runtime.getRuntime()
-        return JSObject().apply {
-            put("stage", stage)
-            put("elapsedMs", elapsedMs(requestStartedAtNs))
-            put("javaHeapUsedBytes", runtime.totalMemory() - runtime.freeMemory())
-            put("javaHeapMaxBytes", runtime.maxMemory())
-            put(
-                "nativeHeapAllocatedBytes",
-                runCatching { Debug.getNativeHeapAllocatedSize() }.getOrDefault(0L),
+        if (enabled) {
+            target.put(
+                MemoryDiagnostics.capture(
+                    context.applicationContext,
+                    stage,
+                    elapsedMs(requestStartedAtNs),
+                    deep,
+                ),
             )
-            put("totalPssKb", runCatching { Debug.getPss() }.getOrDefault(0L))
         }
     }
 
@@ -592,6 +681,13 @@ class OcrPlugin : Plugin() {
         val dataUrl: String,
     )
 
+    private data class DecodedBitmap(
+        val bitmap: Bitmap,
+        val sourceWidth: Int,
+        val sourceHeight: Int,
+        val sampleSize: Int,
+    )
+
     companion object {
         private const val TAG = "NativeOcr"
         private const val OPENCV_LIBRARY_NAME = "opencv_java4"
@@ -599,9 +695,11 @@ class OcrPlugin : Plugin() {
         private const val MAX_CLIPBOARD_CHARS = 500_000
         private const val MAX_SOURCE_SIDE = 50_000
         private const val MAX_DECODE_SIDE = 2_400
+        private const val OCR_MAX_SIDE_LEN = 1_600
         private const val MAX_PREVIEW_SIDE = 1_000
         private const val PREVIEW_JPEG_QUALITY = 80
         private const val STREAM_BUFFER_SIZE = 16 * 1024
+        private val DIAGNOSTIC_STAGE_PATTERN = Regex("[A-Za-z0-9_-]{1,40}")
         private val SUPPORTED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp")
     }
 }

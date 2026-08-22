@@ -1,39 +1,23 @@
-import { NativeOcr, type RecognitionResult } from "./native-ocr";
+import {
+  IDLE_MEMORY_SAMPLES,
+  environmentLine,
+  formatDuration,
+  idleDiagnosisLines,
+  memoryDeltaLine,
+  memorySnapshotLines,
+  recognitionReport,
+  type FrontendMetrics,
+  type RecognitionMemoryContext,
+} from "./memory-report";
+import { NativeOcr, type MemorySnapshot, type RecognitionResult } from "./native-ocr";
 import { requiredElement } from "./ui/dom";
 import { errorMessage, formatFileSize } from "./ui/format";
 import type { StatusView } from "./ui/status-view";
 
-export type FrontendMetrics = {
-  nativeCallWallMs: number;
-  frontendTotalMs: number;
-};
+export type { FrontendMetrics } from "./memory-report";
 
-const LOG_LINE_LIMIT = 200;
+const LOG_LINE_LIMIT = 600;
 const DOUBLE_CLICK_WINDOW_MS = 450;
-
-function formatDuration(value: number): string {
-  return `${value < 10 ? value.toFixed(1) : value.toFixed(0)} ms`;
-}
-
-function formatBytes(value: number): string {
-  return `${(value / 1024 / 1024).toFixed(1)} MiB`;
-}
-
-function formatPss(valueKb: number): string {
-  return `${(valueKb / 1024).toFixed(1)} MiB`;
-}
-
-function memoryStageLabel(stage: string, modelWasLoaded: boolean): string {
-  const labels: Record<string, string> = {
-    requestReceived: "Kotlin 收到请求",
-    imageBytesRead: "原图读取后",
-    imageReady: "图片解码后",
-    engineReady: modelWasLoaded ? "热模型推理前" : "冷模型加载前",
-    inferenceComplete: modelWasLoaded ? "热模型推理后" : "冷模型加载后",
-    resourcesReleased: "Bitmap 释放后",
-  };
-  return labels[stage] ?? stage;
-}
 
 export class DeveloperLog {
   private readonly section = requiredElement<HTMLElement>("#developer-log");
@@ -42,14 +26,19 @@ export class DeveloperLog {
   private readonly clearButton = requiredElement<HTMLButtonElement>("#clear-log");
   private readonly output = requiredElement<HTMLElement>("#session-log");
   private readonly lines: string[] = [];
+  private readonly idleTimers: number[] = [];
   private lastToggleClickAt = 0;
   private active = false;
   private toggling = false;
+  private sampleGeneration = 0;
+  private previousSettledSnapshot?: MemorySnapshot;
+  private currentMemoryContext?: RecognitionMemoryContext;
 
   constructor(private readonly status: StatusView) {
     this.toggleButton.addEventListener("click", () => this.handleToggleClick());
     this.copyButton.addEventListener("click", () => void this.copy());
     this.clearButton.addEventListener("click", () => this.clear());
+    document.addEventListener("visibilitychange", () => void this.captureVisibilitySample());
   }
 
   get enabled(): boolean {
@@ -69,7 +58,8 @@ export class DeveloperLog {
   }
 
   recordRecognitionStart(sequence: number): void {
-    this.append(`第 ${sequence} 次识别开始`);
+    this.cancelIdleSamples();
+    this.append(`第 ${sequence} 次识别开始；已取消上一轮尚未执行的延迟采样`);
   }
 
   recordRecognitionFailure(sequence: number, elapsedMs: number, message: string): void {
@@ -77,36 +67,15 @@ export class DeveloperLog {
   }
 
   recordRecognitionSuccess(result: RecognitionResult, frontend: FrontendMetrics): void {
-    const { metrics } = result;
-    const modelState = metrics.modelWasLoaded ? "热启动" : "冷启动";
-    const bridgeOverheadMs = Math.max(0, frontend.nativeCallWallMs - metrics.nativeTotalMs);
+    if (!this.active) return;
+    const report = recognitionReport(result, frontend, this.previousSettledSnapshot);
+    this.appendLines(report.lines);
+    if (!report.context) return;
 
-    metrics.memorySnapshots.forEach((snapshot) => {
-      const stage = memoryStageLabel(snapshot.stage, metrics.modelWasLoaded);
-      this.append(
-        `内存·${stage}（+${formatDuration(snapshot.elapsedMs)}）：` +
-          `PSS ${formatPss(snapshot.totalPssKb)}，` +
-          `Java ${formatBytes(snapshot.javaHeapUsedBytes)}/${formatBytes(snapshot.javaHeapMaxBytes)}，` +
-          `Native ${formatBytes(snapshot.nativeHeapAllocatedBytes)}`,
-      );
-    });
-
-    this.append(`模型状态：${modelState}`);
-    this.append(
-      `图片处理：读取 ${formatDuration(metrics.imageReadMs)}，` +
-        `解码 ${formatDuration(metrics.imageDecodeMs)}，方向校正 ${formatDuration(metrics.orientationMs)}`,
-    );
-    this.append(
-      `OCR：引擎 ${formatDuration(metrics.engineInitMs)}，` +
-        `推理 ${formatDuration(metrics.inferenceWallMs)}，库内统计 ${formatDuration(result.elapsedMs)}，` +
-        `结果处理 ${formatDuration(metrics.postprocessMs)}`,
-    );
-    this.append(
-      `调用：Kotlin ${formatDuration(metrics.nativeTotalMs)}，` +
-        `Bridge/线程约 ${formatDuration(bridgeOverheadMs)}，` +
-        `端到端 ${formatDuration(frontend.frontendTotalMs)}`,
-    );
-    this.append(`结果：${result.textLines.length} 行文字，${result.idNumbers.length} 个有效身份证号`);
+    this.currentMemoryContext = report.context;
+    this.previousSettledSnapshot = report.context.released;
+    this.append("回收观察：将在 0.5 秒、2 秒、10 秒后继续采样；这些采样不阻塞识别结果返回");
+    this.scheduleIdleSamples(report.context.recognitionId);
   }
 
   append(message: string): void {
@@ -118,6 +87,90 @@ export class DeveloperLog {
     this.output.textContent = this.lines.join("\n");
     this.copyButton.disabled = false;
     this.output.scrollTop = this.output.scrollHeight;
+  }
+
+  private appendLines(lines: string[]): void {
+    lines.forEach((line) => this.append(line));
+  }
+
+  private scheduleIdleSamples(recognitionId: number): void {
+    const generation = ++this.sampleGeneration;
+    IDLE_MEMORY_SAMPLES.forEach((sample) => {
+      const timer = window.setTimeout(() => {
+        void this.captureIdleSample(recognitionId, generation, sample.stage, sample.label);
+      }, sample.delayMs);
+      this.idleTimers.push(timer);
+    });
+  }
+
+  private async captureIdleSample(
+    recognitionId: number,
+    generation: number,
+    stage: string,
+    label: string,
+  ): Promise<void> {
+    try {
+      const probe = await NativeOcr.captureMemoryDiagnostics({ stage, recognitionId });
+      if (!this.active || generation !== this.sampleGeneration) return;
+      if (probe.skipped || !probe.snapshot) {
+        if (probe.reason !== "newerRecognitionStarted") {
+          this.append(`内存·${label}跳过：${probe.reason || "原生端未返回快照"}`);
+        }
+        return;
+      }
+
+      const context = this.currentMemoryContext;
+      if (!context || context.recognitionId !== recognitionId) return;
+
+      this.appendLines(memorySnapshotLines(probe.snapshot, label));
+      this.append(memoryDeltaLine(`${label}相对刚释放时`, context.released, probe.snapshot));
+      this.previousSettledSnapshot = probe.snapshot;
+      if (stage === "idle10s") this.appendLines(idleDiagnosisLines(context, probe.snapshot));
+    } catch (error) {
+      if (this.active && generation === this.sampleGeneration) {
+        this.append(`内存·${label}采样失败：${errorMessage(error)}`);
+      }
+    }
+  }
+
+  private async captureEnableBaseline(): Promise<void> {
+    try {
+      const probe = await NativeOcr.captureMemoryDiagnostics({ stage: "diagnosticsEnabled" });
+      if (!this.active || probe.skipped || !probe.snapshot) return;
+      const environment = environmentLine(probe);
+      if (environment) this.append(environment);
+      this.appendLines(memorySnapshotLines(probe.snapshot, "日志启用基线"));
+    } catch (error) {
+      if (this.active) this.append(`日志启用基线采样失败：${errorMessage(error)}`);
+    }
+  }
+
+  private async captureVisibilitySample(): Promise<void> {
+    if (!this.active) return;
+    const hidden = document.visibilityState === "hidden";
+    const stage = hidden ? "appHidden" : "appVisible";
+    const label = hidden ? "应用进入后台" : "应用回到前台";
+    this.append(`生命周期：${label}，开始检查模型常驻和系统回收情况`);
+
+    try {
+      const probe = await NativeOcr.captureMemoryDiagnostics({ stage });
+      if (!this.active || probe.skipped || !probe.snapshot) {
+        if (this.active && probe.reason) this.append(`生命周期采样跳过：${probe.reason}`);
+        return;
+      }
+      this.appendLines(memorySnapshotLines(probe.snapshot, label));
+      if (this.previousSettledSnapshot) {
+        this.append(memoryDeltaLine(`${label}相对最近稳定值`, this.previousSettledSnapshot, probe.snapshot));
+      }
+      if (this.currentMemoryContext) this.previousSettledSnapshot = probe.snapshot;
+    } catch (error) {
+      if (this.active) this.append(`生命周期采样失败：${errorMessage(error)}`);
+    }
+  }
+
+  private cancelIdleSamples(): void {
+    this.sampleGeneration += 1;
+    this.idleTimers.splice(0).forEach((timer) => window.clearTimeout(timer));
   }
 
   private handleToggleClick(): void {
@@ -138,12 +191,20 @@ export class DeveloperLog {
 
     try {
       await NativeOcr.setDiagnosticsEnabled({ enabled: nextState });
-      if (!nextState) this.append("开发者日志已关闭");
+      if (!nextState) {
+        this.append("开发者日志已关闭；延迟内存采样已取消");
+        this.cancelIdleSamples();
+      }
       this.active = nextState;
       this.section.hidden = !nextState;
       this.toggleButton.classList.toggle("active", nextState);
       this.toggleButton.setAttribute("aria-pressed", String(nextState));
-      if (nextState) this.append("开发者日志已启用；开始采集详细流程和内存数据");
+      if (nextState) {
+        this.previousSettledSnapshot = undefined;
+        this.currentMemoryContext = undefined;
+        this.append("开发者日志已启用；开始采集详细内存组成、映射归因和延迟回收数据");
+        void this.captureEnableBaseline();
+      }
     } catch (error) {
       this.status.show(`日志切换失败：${errorMessage(error)}`, "error");
     } finally {

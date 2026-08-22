@@ -20,7 +20,7 @@ RapidOCR + ONNX Runtime + OpenCV
 - 不申请互联网、网络状态和存储权限，不保存图片、结果或日志历史。
 - 身份证号码在 Kotlin 中完成省级代码、日期、顺序码和校验位检查。
 - OCR 文字框按纵向位置合并，同一视觉行按从左到右输出；有效身份证号统一放在复制全文的第一行。
-- 开发者日志默认关闭，双击页头终端图标后才采集详细阶段耗时和进程内存，关闭时跳过 PSS 采样。
+- 开发者日志默认关闭，双击页头终端图标后才采集详细阶段耗时和进程内存，关闭时跳过所有深度采样。日志开启后会记录 Java/Native/Graphics/Code/Stack 的 PSS 构成、`/proc/self/smaps` 映射分类、Native 分配区、匿名页、模型文件、线程/FD、ART GC、系统可用内存和进程 trim 状态；识别后自动在 0.5 秒、2 秒、10 秒及进后台/回前台时复测，并输出回收比例、映射增量和高水位/疑似泄漏判断。
 
 ## 目录
 
@@ -28,8 +28,9 @@ RapidOCR + ONNX Runtime + OpenCV
 src/main.ts                 识别主流程编排
 src/ui/                     图片、结果、状态等独立界面模块
 src/developer-log.ts        隐藏式开发者日志
+src/memory-report.ts        内存报告格式化、增量计算和趋势判断
 resources/OCR.png            网页及 Android 图标源文件
-android/app/src/main/java/   MainActivity 和单个 OCR 插件
+android/app/src/main/java/   MainActivity、OCR 插件和原生内存诊断
 android/app/src/test/        身份证号码过滤单测
 .github/workflows/           ARM64 Release 云端构建
 ```
@@ -56,6 +57,16 @@ android/app/src/test/        身份证号码过滤单测
 - `ANDROID_KEY_BASE64`
 
 首次从其他签名或旧 Tauri APK 安装时，需要先卸载旧应用。两个项目使用不同 application ID，可以同时安装用于 A/B 测试。
+
+## 内存诊断流程
+
+1. 强制停止应用后重新打开，在第一次识别前双击页头终端图标启用日志。
+2. 固定使用同一张图片，完成一次识别后等待至少 10 秒，让 0.5 秒、2 秒和 10 秒快照全部写入。
+3. 重复识别 5～10 轮，每轮都等待 10 秒；不要提前开始下一轮，否则上一轮未执行的延迟采样会主动取消。
+4. 完成一轮后切到另一个应用，等待约 30 秒再返回，采集后台和回前台快照。
+5. 使用日志右上角复制按钮回传完整日志，重点保留 `单次推理映射增长`、`10 秒回收结论`、`趋势判断` 和 `跨轮判断`。
+
+深度诊断会读取本进程的 `/proc/self/status`、`smaps_rollup` 和 `smaps`，只在日志开启时运行，不需要存储或网络权限。每次采样的耗时会独立写入日志，不计入 OCR 核心推理时间。
 
 ## 本机开发
 
