@@ -19,11 +19,15 @@ RapidOCR + ONNX Runtime + OpenCV
 - `OcrEngine` 首次识别时懒加载，并在应用进程存活期间复用。
 - 不申请互联网、网络状态和存储权限，不保存图片、结果或日志历史。
 - 身份证号码在 Kotlin 中完成省级代码、日期、顺序码和校验位检查。
+- OCR 文字框按纵向位置合并，同一视觉行按从左到右输出；有效身份证号统一放在复制全文的第一行。
+- 开发者日志默认关闭，双击页头终端图标后才采集详细阶段耗时和进程内存，关闭时跳过 PSS 采样。
 
 ## 目录
 
 ```text
-src/                         页面、交互和性能面板
+src/main.ts                 识别主流程编排
+src/ui/                     图片、结果、状态等独立界面模块
+src/developer-log.ts        隐藏式开发者日志
 resources/OCR.png            网页及 Android 图标源文件
 android/app/src/main/java/   MainActivity 和单个 OCR 插件
 android/app/src/test/        身份证号码过滤单测

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#f3f5f7" />
+    <meta name="theme-color" content="#f2f3f5" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' https://localhost capacitor://localhost"
@@ -12,127 +12,110 @@
     <script type="module" src="/src/main.ts"></script>
   </head>
   <body>
-    <div class="app-frame">
+    <div class="app-shell">
       <header class="app-header">
         <div class="brand">
           <img src="/OCR.png" alt="" class="brand-icon" />
           <div>
             <h1>离线文字识别</h1>
-            <p>证件 OCR</p>
+            <p>证件图片本地处理</p>
           </div>
         </div>
-        <span class="offline-state"><span aria-hidden="true"></span>本地运行</span>
+
+        <div class="header-actions">
+          <span class="offline-state"><span aria-hidden="true"></span>离线</span>
+          <button
+            id="developer-toggle"
+            class="icon-button developer-toggle"
+            type="button"
+            title="双击切换开发者日志"
+            aria-label="双击切换开发者日志"
+            aria-pressed="false"
+          >
+            <i data-lucide="square-terminal" aria-hidden="true"></i>
+          </button>
+        </div>
       </header>
 
       <main>
-        <section class="workflow-section" aria-labelledby="image-title">
-          <div class="section-heading">
-            <div>
-              <span class="section-index">01</span>
-              <h2 id="image-title">证件图片</h2>
-            </div>
-            <span class="section-meta">JPG · PNG · WEBP</span>
-          </div>
+        <section class="page-section" aria-labelledby="image-title">
+          <p class="section-title" id="image-title">证件图片</p>
+          <div class="group-card image-workspace">
+            <button id="select-image" class="picker-row" type="button">
+              <span class="feature-icon"><i data-lucide="image-plus" aria-hidden="true"></i></span>
+              <span class="picker-copy">
+                <strong id="select-label">选择图片</strong>
+                <small id="select-detail">JPG、PNG、WEBP · 最大 25 MB</small>
+              </span>
+              <i data-lucide="chevron-right" class="row-chevron" aria-hidden="true"></i>
+            </button>
 
-          <button id="select-image" class="select-button" type="button">
-            <i data-lucide="image-plus" aria-hidden="true"></i>
-            <span>
-              <strong id="select-label">选择一张图片</strong>
-              <small id="select-detail">单张 · 最大 25 MB</small>
-            </span>
-          </button>
-
-          <div id="preview-shell" class="preview-shell" hidden>
-            <img id="preview" alt="所选证件图片预览" />
-            <div class="preview-caption">
-              <div>
-                <strong id="image-name"></strong>
-                <span id="image-meta"></span>
-              </div>
-              <button id="remove-image" class="icon-button" type="button" title="移除图片" aria-label="移除图片">
-                <i data-lucide="x" aria-hidden="true"></i>
+            <div id="preview-shell" class="preview-shell" hidden>
+              <button
+                id="preview-toggle"
+                class="preview-toggle"
+                type="button"
+                aria-label="放大图片预览"
+                aria-expanded="false"
+              >
+                <img id="preview" alt="所选证件图片预览" />
+                <span class="preview-action" aria-hidden="true">
+                  <i data-lucide="maximize-2" class="expand-icon"></i>
+                  <i data-lucide="minimize-2" class="collapse-icon"></i>
+                </span>
               </button>
+
+              <div class="preview-caption">
+                <div>
+                  <strong id="image-name"></strong>
+                  <span id="image-meta"></span>
+                </div>
+                <button id="remove-image" class="icon-button" type="button" title="移除图片" aria-label="移除图片">
+                  <i data-lucide="x" aria-hidden="true"></i>
+                </button>
+              </div>
+            </div>
+
+            <div class="primary-action-row">
+              <button id="recognize" class="primary-button" type="button" disabled>
+                <i data-lucide="scan-text" aria-hidden="true"></i>
+                <span id="recognize-label">开始识别</span>
+                <span class="button-spinner" aria-hidden="true"></span>
+              </button>
+              <p id="status" class="status" role="status" aria-live="polite"></p>
             </div>
           </div>
-
-          <button id="recognize" class="primary-button" type="button" disabled>
-            <i data-lucide="scan-text" aria-hidden="true"></i>
-            <span id="recognize-label">开始识别</span>
-            <span class="button-spinner" aria-hidden="true"></span>
-          </button>
-          <p id="status" class="status" role="status" aria-live="polite"></p>
         </section>
 
-        <section id="results" class="results-section" aria-labelledby="id-title" hidden>
-          <div class="result-block">
-            <div class="section-heading compact">
-              <div>
-                <span class="section-index">02</span>
-                <h2 id="id-title">身份证号</h2>
-              </div>
-              <span id="id-count" class="section-meta"></span>
-            </div>
-            <div id="id-list" class="id-list"></div>
-          </div>
-
-          <div class="result-block text-result">
-            <div class="section-heading compact">
-              <div>
-                <span class="section-index">03</span>
-                <h2>全部文字</h2>
-              </div>
+        <section id="results" class="page-section" aria-labelledby="result-title" hidden>
+          <p class="section-title">识别结果</p>
+          <div class="group-card result-card">
+            <div class="card-heading">
+              <h2 id="result-title">全部文字</h2>
               <button id="copy-all" class="quiet-button" type="button" disabled>
                 <i data-lucide="copy" aria-hidden="true"></i>
-                复制全文
+                <span>复制全文</span>
               </button>
             </div>
-            <div id="text-lines" class="text-lines"></div>
+            <pre class="ocr-output"><code id="ocr-output"></code></pre>
           </div>
         </section>
 
-        <section id="diagnostics" class="diagnostics-section" aria-labelledby="diagnostics-title" hidden>
-          <div class="section-heading compact">
-            <div>
-              <span class="section-index">04</span>
-              <h2 id="diagnostics-title">性能评测</h2>
+        <section id="developer-log" class="page-section developer-section" aria-labelledby="developer-title" hidden>
+          <p class="section-title">开发者</p>
+          <div class="group-card log-card">
+            <div class="card-heading">
+              <h2 id="developer-title">运行日志</h2>
+              <div class="log-actions">
+                <button id="copy-log" class="icon-button" type="button" title="复制日志" aria-label="复制日志" disabled>
+                  <i data-lucide="clipboard-copy" aria-hidden="true"></i>
+                </button>
+                <button id="clear-log" class="icon-button" type="button" title="清空日志" aria-label="清空日志">
+                  <i data-lucide="trash-2" aria-hidden="true"></i>
+                </button>
+              </div>
             </div>
-            <div class="diagnostic-actions">
-              <button id="copy-diagnostics" class="icon-button" type="button" title="复制日志" aria-label="复制日志" disabled>
-                <i data-lucide="clipboard-copy" aria-hidden="true"></i>
-              </button>
-              <button id="clear-diagnostics" class="icon-button" type="button" title="清空日志" aria-label="清空日志">
-                <i data-lucide="trash-2" aria-hidden="true"></i>
-              </button>
-            </div>
-          </div>
-
-          <dl id="metrics-summary" class="metrics-summary"></dl>
-
-          <div class="diagnostic-block">
-            <h3>阶段耗时</h3>
-            <dl id="timing-details" class="timing-details"></dl>
-          </div>
-
-          <div class="diagnostic-block">
-            <h3>进程内存</h3>
-            <div class="table-scroll">
-              <table class="memory-table">
-                <thead>
-                  <tr>
-                    <th>阶段</th>
-                    <th>PSS</th>
-                    <th>Java 已用/上限</th>
-                    <th>Native</th>
-                  </tr>
-                </thead>
-                <tbody id="memory-table-body"></tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="diagnostic-block">
-            <h3>会话日志</h3>
-            <ol id="session-log" class="session-log" aria-live="polite"></ol>
+            <pre id="session-log" class="session-log" role="log" aria-live="polite"></pre>
           </div>
         </section>
       </main>

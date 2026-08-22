@@ -20,6 +20,7 @@ import android.util.Log
 import androidx.activity.result.ActivityResult
 import androidx.exifinterface.media.ExifInterface
 import com.benjaminwan.ocrlibrary.OcrEngine
+import com.benjaminwan.ocrlibrary.models.OcrResult
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -45,6 +46,9 @@ class OcrPlugin : Plugin() {
 
     @Volatile
     private var modelIsWarm = false
+
+    @Volatile
+    private var diagnosticsEnabled = false
 
     @PluginMethod
     fun pickImage(call: PluginCall) {
@@ -128,6 +132,12 @@ class OcrPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun setDiagnosticsEnabled(call: PluginCall) {
+        diagnosticsEnabled = call.getBoolean("enabled", false) ?: false
+        call.resolve()
+    }
+
+    @PluginMethod
     fun recognizeSelected(call: PluginCall) {
         val uri = selectedImageUri
         if (uri == null) {
@@ -143,17 +153,28 @@ class OcrPlugin : Plugin() {
             val requestStartedAtNs = SystemClock.elapsedRealtimeNanos()
             val startedAtEpochMs = System.currentTimeMillis()
             val memorySnapshots = JSArray()
+            val collectDiagnostics = diagnosticsEnabled
             var imageBytes: ByteArray? = null
             var bitmap: Bitmap? = null
 
             try {
-                memorySnapshots.put(memorySnapshot("requestReceived", requestStartedAtNs))
+                captureMemorySnapshot(
+                    memorySnapshots,
+                    "requestReceived",
+                    requestStartedAtNs,
+                    collectDiagnostics,
+                )
 
                 val imageReadStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val bytes = readImageBytes(uri)
                 imageBytes = bytes
                 val imageReadMs = elapsedMs(imageReadStartedAtNs)
-                memorySnapshots.put(memorySnapshot("imageBytesRead", requestStartedAtNs))
+                captureMemorySnapshot(
+                    memorySnapshots,
+                    "imageBytesRead",
+                    requestStartedAtNs,
+                    collectDiagnostics,
+                )
 
                 val imageDecodeStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val decodedBitmap = decodeSampledBitmap(bytes, MAX_DECODE_SIDE)
@@ -168,13 +189,23 @@ class OcrPlugin : Plugin() {
                 }
                 bitmap = orientedBitmap
                 val orientationMs = elapsedMs(orientationStartedAtNs)
-                memorySnapshots.put(memorySnapshot("imageReady", requestStartedAtNs))
+                captureMemorySnapshot(
+                    memorySnapshots,
+                    "imageReady",
+                    requestStartedAtNs,
+                    collectDiagnostics,
+                )
 
                 val modelWasLoaded = modelIsWarm
                 val engineInitStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val engine = getEngine()
                 val engineInitMs = elapsedMs(engineInitStartedAtNs)
-                memorySnapshots.put(memorySnapshot("engineReady", requestStartedAtNs))
+                captureMemorySnapshot(
+                    memorySnapshots,
+                    "engineReady",
+                    requestStartedAtNs,
+                    collectDiagnostics,
+                )
 
                 val inferenceStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val nativeResult = engine.detect(
@@ -190,11 +221,16 @@ class OcrPlugin : Plugin() {
                 )
                 modelIsWarm = true
                 val inferenceWallMs = elapsedMs(inferenceStartedAtNs)
-                memorySnapshots.put(memorySnapshot("inferenceComplete", requestStartedAtNs))
+                captureMemorySnapshot(
+                    memorySnapshots,
+                    "inferenceComplete",
+                    requestStartedAtNs,
+                    collectDiagnostics,
+                )
 
                 val postprocessStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val textLines = try {
-                    cleanTextLines(nativeResult.recResults.map { it.text })
+                    composeTextLines(nativeResult)
                 } finally {
                     if (nativeResult.boxImage !== orientedBitmap) {
                         nativeResult.boxImage.recycleSafely()
@@ -208,7 +244,12 @@ class OcrPlugin : Plugin() {
                 imageBytes = null
                 bitmap.recycleSafely()
                 bitmap = null
-                memorySnapshots.put(memorySnapshot("resourcesReleased", requestStartedAtNs))
+                captureMemorySnapshot(
+                    memorySnapshots,
+                    "resourcesReleased",
+                    requestStartedAtNs,
+                    collectDiagnostics,
+                )
 
                 val metrics = JSObject().apply {
                     put("startedAtEpochMs", startedAtEpochMs)
@@ -271,6 +312,7 @@ class OcrPlugin : Plugin() {
         selectedImageUri = null
         ocrEngine = null
         modelIsWarm = false
+        diagnosticsEnabled = false
         executor.shutdownNow()
         super.handleOnDestroy()
     }
@@ -470,6 +512,38 @@ class OcrPlugin : Plugin() {
         return cleaned
     }
 
+    private fun composeTextLines(result: OcrResult): List<String> {
+        val positionedText = mutableListOf<PositionedText>()
+
+        result.recResults.forEachIndexed { index, recognition ->
+            val text = recognition.text.trim()
+            if (text.isEmpty()) return@forEachIndexed
+
+            val points = result.detResults.getOrNull(index)?.points.orEmpty()
+            if (points.isEmpty()) {
+                return cleanTextLines(result.recResults.map { it.text })
+            }
+
+            positionedText += PositionedText(
+                text = text,
+                left = points.minOf { it.x },
+                top = points.minOf { it.y },
+                bottom = points.maxOf { it.y },
+            )
+        }
+
+        return cleanTextLines(TextLineComposer.compose(positionedText))
+    }
+
+    private fun captureMemorySnapshot(
+        target: JSArray,
+        stage: String,
+        requestStartedAtNs: Long,
+        enabled: Boolean,
+    ) {
+        if (enabled) target.put(memorySnapshot(stage, requestStartedAtNs))
+    }
+
     private fun memorySnapshot(stage: String, requestStartedAtNs: Long): JSObject {
         val runtime = Runtime.getRuntime()
         return JSObject().apply {
@@ -529,6 +603,72 @@ class OcrPlugin : Plugin() {
         private const val PREVIEW_JPEG_QUALITY = 80
         private const val STREAM_BUFFER_SIZE = 16 * 1024
         private val SUPPORTED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp")
+    }
+}
+
+internal data class PositionedText(
+    val text: String,
+    val left: Int,
+    val top: Int,
+    val bottom: Int,
+) {
+    val centerY: Double get() = (top + bottom) / 2.0
+    val height: Int get() = (bottom - top).coerceAtLeast(1)
+}
+
+internal object TextLineComposer {
+    fun compose(items: List<PositionedText>): List<String> {
+        if (items.isEmpty()) return emptyList()
+
+        val rows = mutableListOf<TextRow>()
+        items
+            .filter { it.text.isNotBlank() }
+            .sortedWith(compareBy<PositionedText> { it.top }.thenBy { it.left })
+            .forEach { item ->
+                val row = rows
+                    .filter { isSameVisualLine(it, item) }
+                    .minByOrNull { kotlin.math.abs(it.centerY - item.centerY) }
+
+                if (row == null) rows += TextRow(item) else row.add(item)
+            }
+
+        return rows
+            .sortedWith(compareBy<TextRow> { it.top }.thenBy { it.left })
+            .map { row ->
+                row.items
+                    .sortedBy { it.left }
+                    .joinToString(" ") { it.text.trim() }
+            }
+    }
+
+    private fun isSameVisualLine(row: TextRow, item: PositionedText): Boolean {
+        val overlap = (
+            minOf(row.bottom, item.bottom) - maxOf(row.top, item.top)
+        ).coerceAtLeast(0)
+        val minimumHeight = minOf(row.height, item.height).coerceAtLeast(1)
+        val overlapRatio = overlap.toDouble() / minimumHeight.toDouble()
+        val centerDistance = kotlin.math.abs(row.centerY - item.centerY)
+        val centerTolerance = maxOf(row.height, item.height) * 0.45
+        return overlapRatio >= 0.35 || centerDistance <= centerTolerance
+    }
+
+    private class TextRow(first: PositionedText) {
+        val items = mutableListOf(first)
+        var left: Int = first.left
+            private set
+        var top: Int = first.top
+            private set
+        var bottom: Int = first.bottom
+            private set
+        val centerY: Double get() = (top + bottom) / 2.0
+        val height: Int get() = (bottom - top).coerceAtLeast(1)
+
+        fun add(item: PositionedText) {
+            items += item
+            left = minOf(left, item.left)
+            top = minOf(top, item.top)
+            bottom = maxOf(bottom, item.bottom)
+        }
     }
 }
 

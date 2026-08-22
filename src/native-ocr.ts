@@ -41,6 +41,7 @@ type NativeOcrPlugin = {
   pickImage(): Promise<PickImageResult>;
   recognizeSelected(): Promise<RecognitionResult>;
   clearSelection(): Promise<void>;
+  setDiagnosticsEnabled(options: { enabled: boolean }): Promise<void>;
   copyText(options: { value: string }): Promise<void>;
 };
 
