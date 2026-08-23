@@ -6,27 +6,31 @@ import org.junit.Test
 
 class IdCardParserTest {
     @Test
-    fun extractsValid18And15DigitNumbers() {
+    fun extractsOnlyStrictValid18CharacterNumbers() {
         val lines = listOf(
-            "公民身份号码 110105 1949 1231 002x",
+            "公民身份号码 11010519491231002x",
+            "数字校验位 110105194912310011",
             "旧号码 130503-670401-001",
         )
 
         assertEquals(
-            listOf("11010519491231002X", "130503670401001"),
+            listOf("11010519491231002X", "110105194912310011"),
             IdCardParser.extract(lines),
         )
     }
 
     @Test
-    fun normalizesFullWidthCharactersAndDeduplicates() {
+    fun rejectsNonDigitCharactersAndDoesNotRepairOcrText() {
         val lines = listOf(
             "身份证 １１０１０５１９４９１２３１００２ｘ",
-            "身份证 11010519491231002X",
             "OCR混淆 11O1O519491231OO2X",
+            "带空格 110105 1949 1231 002X",
+            "带横杠 110105-19491231-002X",
+            "错误末位 11010519491231002A",
+            "超长数字 911010519491231002X",
         )
 
-        assertEquals(listOf("11010519491231002X"), IdCardParser.extract(lines))
+        assertTrue(IdCardParser.extract(lines).isEmpty())
     }
 
     @Test

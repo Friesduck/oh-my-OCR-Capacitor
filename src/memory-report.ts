@@ -194,6 +194,7 @@ export function recognitionReport(
       `Bridge/线程约 ${formatDuration(bridgeOverheadMs)}，` +
       `端到端 ${formatDuration(frontend.frontendTotalMs)}`,
     `结果：${result.textLines.length} 行文字，${result.idNumbers.length} 个有效身份证号，` +
+      `${result.validityPeriods.length} 个有效期限，` +
       `剪贴板手机号${result.clipboardPhone ? "已读取" : "未读取"}`,
     "内存阶段 | 以下按请求、图片、推理、释放顺序记录",
     ...snapshotLines,

@@ -126,6 +126,7 @@ export type MemoryDiagnosticsProbe = {
 
 export type RecognitionResult = {
   idNumbers: string[];
+  validityPeriods: string[];
   textLines: string[];
   textGroups: string[][];
   clipboardPhone?: string;

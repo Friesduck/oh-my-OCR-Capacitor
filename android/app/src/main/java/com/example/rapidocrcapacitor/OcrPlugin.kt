@@ -269,6 +269,10 @@ class OcrPlugin : Plugin() {
             call.reject("请先选择图片")
             return
         }
+        if (imageUris.size > MAX_SELECTED_IMAGES) {
+            call.reject("一次最多识别 $MAX_SELECTED_IMAGES 张图片")
+            return
+        }
         if (!recognitionInProgress.compareAndSet(false, true)) {
             call.reject("已有识别任务正在运行")
             return
@@ -317,6 +321,7 @@ class OcrPlugin : Plugin() {
                 var ocrElapsedMs = 0L
                 val textGroups = mutableListOf<List<String>>()
                 val idNumbers = linkedSetOf<String>()
+                val validityPeriods = linkedSetOf<String>()
 
                 imageUris.forEachIndexed { index, uri ->
                     try {
@@ -393,6 +398,7 @@ class OcrPlugin : Plugin() {
                         val lines = composeTextLines(nativeResult)
                         textGroups += lines
                         idNumbers += IdCardParser.extract(lines)
+                        validityPeriods += ValidityPeriodParser.extract(lines)
                         detectionCount += nativeResult.detResults.size
                         recognitionCount += nativeResult.recResults.size
                         postprocessMs += elapsedMs(postprocessStartedAtNs)
@@ -454,6 +460,7 @@ class OcrPlugin : Plugin() {
                 }
                 val response = JSObject().apply {
                     put("idNumbers", JSArray(idNumbers.toList()))
+                    put("validityPeriods", JSArray(validityPeriods.toList()))
                     put("textLines", JSArray(textGroups.flatten()))
                     put("textGroups", textGroupArray)
                     clipboardPhone?.let { put("clipboardPhone", it) }
@@ -855,7 +862,7 @@ class OcrPlugin : Plugin() {
         private const val TAG = "NativeOcr"
         private const val OPENCV_LIBRARY_NAME = "opencv_java4"
         private const val MAX_IMAGE_BYTES = 25 * 1024 * 1024
-        private const val MAX_SELECTED_IMAGES = 45
+        private const val MAX_SELECTED_IMAGES = 4
         private const val MAX_CLIPBOARD_CHARS = 500_000
         private const val MAX_SOURCE_SIDE = 50_000
         private const val MAX_DECODE_SIDE = 2_400
@@ -948,6 +955,9 @@ internal object TextLineComposer {
 }
 
 internal object IdCardParser {
+    private val candidatePattern = Regex(
+        "(?<![0-9A-Za-z])([0-9]{17}[0-9Xx])(?![0-9A-Za-z])",
+    )
     private val provinces = setOf(
         11, 12, 13, 14, 15, 21, 22, 23, 31, 32, 33, 34, 35, 36, 37,
         41, 42, 43, 44, 45, 46, 50, 51, 52, 53, 54, 61, 62, 63, 64, 65,
@@ -961,68 +971,18 @@ internal object IdCardParser {
         val seen = linkedSetOf<String>()
 
         lines.forEach { line ->
-            candidateChunks(line).forEach { chunk ->
-                windows(chunk, 18).forEach { candidate ->
-                    if (isValid18(candidate) && seen.add(candidate)) results += candidate
-                }
-                windows(chunk, 15).forEach { candidate ->
-                    if (
-                        isValid15(candidate) &&
-                        results.none { it.contains(candidate) } &&
-                        seen.add(candidate)
-                    ) {
-                        results += candidate
-                    }
-                }
+            candidatePattern.findAll(line).forEach { match ->
+                val candidate = match.groupValues[1].uppercase()
+                if (isValid18(candidate) && seen.add(candidate)) results += candidate
             }
         }
         return results
     }
 
-    private fun candidateChunks(line: String): List<String> {
-        val chunks = mutableListOf<String>()
-        val current = StringBuilder()
-
-        fun flush() {
-            if (current.isNotEmpty()) {
-                chunks += current.toString()
-                current.clear()
-            }
-        }
-
-        line.forEach { character ->
-            when (character) {
-                in '０'..'９' -> {
-                    current.append(('0'.code + character.code - '０'.code).toChar())
-                }
-                'x', 'ｘ', 'Ｘ' -> current.append('X')
-                'O', 'o', 'Ｏ', 'ｏ', '〇' -> current.append('0')
-                'I', 'i', 'l', 'L', 'Ｉ', 'ｉ', 'ｌ', 'Ｌ', '|' -> current.append('1')
-                '-', '－', '—', '·' -> Unit
-                else -> {
-                    when {
-                        character in '0'..'9' || character == 'X' -> current.append(character)
-                        character.isWhitespace() -> Unit
-                        else -> flush()
-                    }
-                }
-            }
-        }
-        flush()
-        return chunks
-    }
-
-    private fun windows(value: String, length: Int): Sequence<String> {
-        if (value.length < length) return emptySequence()
-        return (0..value.length - length).asSequence().map { start ->
-            value.substring(start, start + length)
-        }
-    }
-
     private fun isValid18(candidate: String): Boolean {
         if (candidate.length != 18) return false
-        if (!candidate.take(17).all(Char::isDigit)) return false
-        if (!candidate.last().isDigit() && candidate.last() != 'X') return false
+        if (!candidate.take(17).all { it in '0'..'9' }) return false
+        if (candidate.last() !in '0'..'9' && candidate.last() != 'X') return false
         if (!hasValidProvince(candidate) || candidate.substring(14, 17) == "000") return false
 
         val year = candidate.substring(6, 10).toIntOrNull() ?: return false
@@ -1034,16 +994,6 @@ internal object IdCardParser {
             .mapIndexed { index, digit -> digit.digitToInt() * weights[index] }
             .sum()
         return candidate.last() == checkCodes[checksum % 11]
-    }
-
-    private fun isValid15(candidate: String): Boolean {
-        if (candidate.length != 15 || !candidate.all(Char::isDigit)) return false
-        if (!hasValidProvince(candidate) || candidate.substring(12, 15) == "000") return false
-
-        val year = candidate.substring(6, 8).toIntOrNull()?.plus(1900) ?: return false
-        val month = candidate.substring(8, 10).toIntOrNull() ?: return false
-        val day = candidate.substring(10, 12).toIntOrNull() ?: return false
-        return isValidDate(year, month, day)
     }
 
     private fun hasValidProvince(candidate: String): Boolean {
@@ -1060,5 +1010,24 @@ internal object IdCardParser {
             else -> 31
         }
         return day in 1..daysInMonth
+    }
+}
+
+internal object ValidityPeriodParser {
+    private val candidatePattern = Regex(
+        "(?<![0-9])([0-9]{4}\\.[0-9]{2}\\.[0-9]{2}-(?:[0-9]{4}\\.[0-9]{2}\\.[0-9]{2}|长期))(?![0-9])",
+    )
+
+    fun extract(lines: List<String>): List<String> {
+        val results = mutableListOf<String>()
+        val seen = linkedSetOf<String>()
+
+        lines.forEach { line ->
+            candidatePattern.findAll(line).forEach { match ->
+                val candidate = match.groupValues[1]
+                if (seen.add(candidate)) results += candidate
+            }
+        }
+        return results
     }
 }

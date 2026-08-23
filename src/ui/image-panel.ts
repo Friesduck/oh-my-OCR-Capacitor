@@ -108,7 +108,7 @@ export class ImagePanel {
     this.selectLabel.textContent = this.hasSelection ? "重新选择" : "选择图片";
     this.selectDetail.textContent = this.hasSelection
       ? "点击缩略图可全屏查看原图"
-      : "单张或多张，最多 45 张";
+      : "单张或多张，最多 4 张";
   }
 
   private resetView(): void {

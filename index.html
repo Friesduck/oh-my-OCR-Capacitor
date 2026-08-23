@@ -45,7 +45,7 @@
               <span class="feature-icon"><i data-lucide="image-plus" aria-hidden="true"></i></span>
               <span class="picker-copy">
                 <strong id="select-label">选择图片</strong>
-                <small id="select-detail">单张或多张，最多 45 张</small>
+                <small id="select-detail">单张或多张，最多 4 张</small>
               </span>
               <span class="add-action" aria-hidden="true"><i data-lucide="plus"></i></span>
             </button>
@@ -90,9 +90,16 @@
                 <span class="key-icon phone"><i data-lucide="phone" aria-hidden="true"></i></span>
                 <span class="key-copy"><small>剪贴板手机号</small><strong id="clipboard-phone">未识别到</strong></span>
               </div>
+              <div class="key-row">
+                <span class="key-icon validity"><i data-lucide="calendar-range" aria-hidden="true"></i></span>
+                <span class="key-copy">
+                  <small>有效期限</small>
+                  <strong id="validity-summary" class="multi-value">未识别到</strong>
+                </span>
+              </div>
             </div>
             <div class="content-heading"><span>全部文字</span><span id="result-count"></span></div>
-            <pre class="ocr-output"><code id="ocr-output"></code></pre>
+            <div id="ocr-output" class="ocr-output"></div>
           </div>
         </section>
 

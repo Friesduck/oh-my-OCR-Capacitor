@@ -1,5 +1,6 @@
 import { Capacitor } from "@capacitor/core";
 import {
+  CalendarRange,
   ClipboardCopy,
   ContactRound,
   Copy,
@@ -86,6 +87,7 @@ recognizeButton.addEventListener("click", async () => {
 
 createIcons({
   icons: {
+    CalendarRange,
     ClipboardCopy,
     ContactRound,
     Copy,

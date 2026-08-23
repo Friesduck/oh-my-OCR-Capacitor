@@ -11,10 +11,13 @@
 
 - 已建立独立 Capacitor 8.5.0 项目，application ID 为 `com.example.rapidocrcapacitor`。
 - 前端使用 Vite 7、TypeScript 和 Lucide，并按图片选择、结果展示、状态和开发者日志拆分模块；UI 已参考 `demo1.html` 收敛为极简 iOS 磨砂风格，使用紧凑层级、圆角、按压反馈和轻量入场动画。
-- 支持单张或多张图片选择，最多 45 张；缩略图按选择顺序网格排列且不显示文件名，点击后由原生全屏展示，点击或返回关闭并回收 Bitmap。
+- 支持单张或多张图片选择，前端提示和原生选择/识别上限均为 4 张；缩略图按选择顺序网格排列且不显示文件名，点击后由原生全屏展示，点击或返回关闭并回收 Bitmap。
 - `OcrPlugin.kt` 负责系统多选、单图 25 MB 限额、逐张降采样/EXIF/推理/回收、剪贴板手机号提取、同行文字框合并、身份证校验和按需 PSS/Heap 快照。
 - 已用自维护的 `OptimizedOcrEngine` 替代 AAR 旧 `OcrEngine` 调用路径：模型复制到 `noBackupFilesDir/ocr-models` 后按文件路径创建 Session，关闭 CPU arena 和 memory pattern，复用直接输入缓冲，显式释放 OpenCV `Mat`，并取消未使用的检测框 Bitmap。
-- 结果区将身份证号与剪贴板手机号作为同级关键信息单行显示，下方完整展示逐图 OCR 内容；复制全部会同时复制身份证号、手机号和带分隔符的所有图片文字。
+- 身份证候选严格限制为连续 17 位 ASCII 数字加 1 位数字或 `X/x`，不修补空格、横杠、全角字符和 `O/I` 混淆；候选仍需通过省份、日期、顺序码和校验位验证，不提取 15 位旧号码。
+- 从全部逐图文字中提取精确的 `YYYY.MM.DD-YYYY.MM.DD` 或 `YYYY.MM.DD-长期` 有效期限，只校验字符格式，不校验日历值或起止顺序；多项去重后按识别顺序保留。
+- 结果区按身份证号、剪贴板手机号、有效期限三行展示关键信息，有效期限多项用顿号连接；下方用“图片编号 + 行数 + 独立正文带”完整展示逐图 OCR 内容，复制全部包含三项摘要和所有图片文字。
+- 已新增独立的 `design-style-guide.md`，只描述轻量磨砂移动工具界面的视觉基调、tokens、通用组件、动效、响应式和实施清单，不引用设计来源或当前业务实例。
 - Android 配置使用 Java 21、SDK 36、ARM64、R8、资源裁剪和 16 KB 兼容检查；Manifest 显式移除联网权限。
 - GitHub Actions 支持自动临时签名或固定 Secrets，并输出 APK 包体分类报告。
 - 使用根目录现有 `OCR.png` 生成网页图标和 Android 各密度普通/自适应图标。
@@ -39,7 +42,7 @@
 - 若优化引擎 10 秒稳定值仍接近 1 GiB 或跨轮持续阶梯上涨，再评估独立 OCR 工作进程并在返回结果后退出进程。
 - 不采用每次启动清应用缓存或识别后直接 `System.gc()` 作为正式方案；它们无法可靠释放 ONNX/OpenCV 原生内存。
 - 通过 GitHub Actions 构建并在 Android 16 真机确认页头已完全避开状态栏和挖孔区域。
-- 另用 2～4 张图片验证选择顺序、逐图结果分隔、复制全文、剪贴板手机号和全屏预览关闭回收。
+- 另用 1～4 张图片验证选择顺序、4 张上限、逐图结果分组、复制全文、严格 18 位身份证号、两种有效期限格式、多期限顿号连接、剪贴板 11 位手机号和全屏预览关闭回收。
 
 ## 工作日志
 
@@ -51,3 +54,5 @@
 - 2026-08-23：扩展 Capacitor 开发者日志为深度内存归因和延迟回收测试；新增 `MemoryDiagnostics.kt`、`src/memory-report.ts`，修改 `OcrPlugin.kt`、`src/native-ocr.ts`、`src/developer-log.ts`、`README.md` 和交接文档；增加 PSS 构成、smaps 映射、Native 分配区、ART GC、系统内存、后台生命周期和 0.5/2/10 秒复测，尚待 GitHub Actions 编译与真机回传日志。
 - 2026-08-23：分析 `markDown1787446657675.md.txt` 的第 2 次热识别内存数据并复核 RapidOCR 上游源码；修改 `oh-my-agents.md`；确认模型使用 `readBytes()`、推理后异常增长集中在 Native/匿名页，纠正“日志启用基线等于冷启动基线”和“mmap 是本轮最大问题”的判断，尚待完整 10 秒及 5～10 轮同图数据定性高水位或泄漏。
 - 2026-08-23：完成多图、剪贴板手机号、全屏原图、极简 iOS UI 和 OCR Native 内存重构；新增 `ocr/OptimizedOcrEngine.kt`、`ocr/OcrInference.kt`、`ocr/OcrOpenCv.kt`、`ClipboardPhoneParserTest.kt`，修改 `OcrPlugin.kt`、前端模块、README 和交接文档；模型改为路径 Session，关闭 ONNX CPU arena/memory pattern，复用直接输入缓冲并显式释放临时 `Mat`，最多 45 张图片逐张识别；已通过 11 个 TypeScript 文件语法、25 个 HTML ID、结果组合样例、HTML/CSS/Kotlin 结构和 `git diff --check` 静态检查，尚待 GitHub Actions 编译及 Android 真机内存验证。
+- 2026-08-23 16:37：收敛证件提取与多图展示；新增 `design-style-guide.md`，修改 `index.html`、`src/styles.css`、`src/ui/format.ts`、`src/ui/image-panel.ts`、`src/ui/result-panel.ts`、`OcrPlugin.kt`、`IdCardParserTest.kt`、`README.md` 和交接文档；身份证仅保留 18 位校验提取，图片选择/识别双重上限改为 4 张，逐图结果改为带编号、行数和独立正文带的清晰分组，手机号与 OCR 推理逻辑未改；已通过 11 个 TypeScript 文件语法、25 个 HTML 唯一 ID、结果分组样例、Kotlin 关键约束、残留实现和 `git diff --check` 静态检查，本机无依赖未执行 TypeScript 类型检查、Gradle 单测或 Android 构建，尚待服务器与真机验证。
+- 2026-08-23 16:47：新增有效期限提取并收紧身份证候选规则；新增 `ValidityPeriodParserTest.kt`，修改 `OcrPlugin.kt`、`IdCardParserTest.kt`、`src/native-ocr.ts`、`src/ui/format.ts`、`src/ui/result-panel.ts`、`src/main.ts`、`src/memory-report.ts`、`index.html`、`src/styles.css`、`README.md`、`design-style-guide.md` 和交接文档；身份证只接受连续 17 位 ASCII 数字加数字或 `X/x` 且不做 OCR 字符修补，有效期限只按两种指定字符格式提取且不校验日期/顺序，结果第三行展示并用顿号连接多项；样式指南重写为无来源引用、无当前业务实例的独立设计规范；已通过身份证/期限正反样例、多值复制样例、11 个 TypeScript 文件语法、26 个 HTML 唯一 ID、CSS 结构、8 项 Kotlin 结构、样式指南禁用词和 `git diff --check` 静态检查，本机无依赖未执行 TypeScript 类型检查、Gradle 单测或 Android 构建，尚待服务器与真机验证。

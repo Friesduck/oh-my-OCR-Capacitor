@@ -22,6 +22,11 @@ function uniqueClean(values: string[]): string[] {
   return [...new Set(values.map(cleanLine).filter(Boolean))];
 }
 
+export function recognitionTextGroups(result: RecognitionResult): string[][] {
+  const groups = result.textGroups.length > 0 ? result.textGroups : [result.textLines];
+  return groups.map((group) => group.map(cleanLine).filter(Boolean));
+}
+
 export function recognitionIdentifiers(result: RecognitionResult): string {
   return uniqueClean(result.idNumbers).join("、") || "未识别到";
 }
@@ -30,14 +35,17 @@ export function recognitionPhone(result: RecognitionResult): string {
   return cleanLine(result.clipboardPhone || "") || "未识别到";
 }
 
-export function composeOcrBody(result: RecognitionResult): string {
-  const groups = result.textGroups.length > 0 ? result.textGroups : [result.textLines];
-  const visibleGroups = groups.map((group) => group.map(cleanLine).filter(Boolean));
-  if (visibleGroups.length === 1) return visibleGroups[0].join("\n");
+export function recognitionValidityPeriods(result: RecognitionResult): string {
+  return uniqueClean(result.validityPeriods || []).join("、") || "未识别到";
+}
 
-  return visibleGroups
-    .map((lines, index) => [`图片 ${index + 1}`, ...lines].join("\n"))
-    .join("\n\n------------------------------\n\n");
+export function composeOcrBody(result: RecognitionResult): string {
+  return recognitionTextGroups(result)
+    .map((lines, index) => [
+      `========== 图片 ${index + 1} ==========`,
+      ...(lines.length > 0 ? lines : ["未识别到文字"]),
+    ].join("\n"))
+    .join("\n\n");
 }
 
 export function composeRecognitionText(result: RecognitionResult): string {
@@ -45,6 +53,7 @@ export function composeRecognitionText(result: RecognitionResult): string {
   return [
     `身份证号：${recognitionIdentifiers(result)}`,
     `手机号：${recognitionPhone(result)}`,
+    `有效期限：${recognitionValidityPeriods(result)}`,
     "",
     "------------------------------",
     "",

@@ -18,6 +18,8 @@
   --accent-soft: rgba(8, 123, 241, 0.1);
   --phone-soft: rgba(12, 143, 118, 0.11);
   --phone: #07836e;
+  --validity-soft: rgba(190, 108, 0, 0.11);
+  --validity: #a35d00;
   --danger: #d94a55;
   --radius-card: 20px;
   --radius-control: 14px;
@@ -510,6 +512,11 @@ main {
   background: var(--phone-soft);
 }
 
+.key-icon.validity {
+  color: var(--validity);
+  background: var(--validity-soft);
+}
+
 .key-copy {
   display: grid;
   min-width: 0;
@@ -531,6 +538,14 @@ main {
   -webkit-user-select: text;
 }
 
+.key-copy strong.multi-value {
+  overflow: visible;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .content-heading {
   display: flex;
   align-items: center;
@@ -543,8 +558,8 @@ main {
   font-weight: 650;
 }
 
-.ocr-output,
-.session-log {
+.session-log,
+.ocr-group-body {
   margin: 0;
   font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
   font-variant-numeric: tabular-nums;
@@ -556,10 +571,67 @@ main {
 
 .ocr-output {
   min-height: 112px;
-  padding: 16px 17px 19px;
   border-top: 1px solid var(--divider);
-  color: #2d313a;
   background: rgba(248, 249, 251, 0.72);
+}
+
+.ocr-group {
+  position: relative;
+  min-width: 0;
+  padding: 0 17px 19px;
+}
+
+.ocr-group + .ocr-group {
+  padding-top: 8px;
+  border-top: 1px solid rgba(8, 123, 241, 0.14);
+}
+
+.ocr-group-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 47px;
+  gap: 12px;
+}
+
+.ocr-group-heading h3 {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  gap: 9px;
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 750;
+}
+
+.ocr-group-heading h3::before {
+  width: 4px;
+  height: 17px;
+  flex: 0 0 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  content: "";
+}
+
+.ocr-group-heading span {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: rgba(21, 24, 36, 0.055);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ocr-group-body {
+  min-height: 58px;
+  padding: 13px 14px;
+  border-left: 2px solid rgba(8, 123, 241, 0.18);
+  border-radius: 0 10px 10px 0;
+  color: #2d313a;
+  background: rgba(255, 255, 255, 0.62);
   font-size: 14px;
   line-height: 1.72;
 }
@@ -617,12 +689,6 @@ main {
 @keyframes spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@media (min-width: 600px) {
-  .image-grid {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 }
 
