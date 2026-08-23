@@ -14,13 +14,14 @@ OcrPlugin.kt
 RapidOCR + ONNX Runtime + OpenCV
 ```
 
-- Kotlin 调用系统图片选择器并持有 `content://` URI；支持单张或多张选择，最多 4 张，并按选择顺序逐张识别、逐张释放。
+- Kotlin 按系统版本申请共享图库的全部图片读取权限：Android 13+ 使用 `READ_MEDIA_IMAGES`，Android 12 及以下使用 `READ_EXTERNAL_STORAGE`。授权后调用系统图库多选并持有 `content://` URI，最多 4 张。
+- 原生 `ClipData` 返回顺序作为唯一顺序，前端缩略图显示 `1～4` 角标，预览、逐张识别和结果分组严格复用同一 URI 数组。
 - 原图不转换为 Base64，也不传入 JavaScript；前端只接收压缩预览和文字结果。
 - `OptimizedOcrEngine` 首次识别时懒加载，并在应用进程存活期间复用。模型先复制到应用 `noBackupFilesDir`，再通过文件路径创建 ONNX Session，避免把完整模型读成 Java `byte[]`；实际 mmap 归类仍以真机 `/proc/self/smaps` 为准。
 - ONNX Session 关闭 CPU arena 和 memory pattern；推理输入复用直接缓冲，OpenCV 中间 `Mat` 用完立即 `release()`，不再生成未使用的检测框 Bitmap。
-- 不申请互联网、网络状态和存储权限，不保存图片、结果或日志历史。
+- 不申请互联网或网络状态权限，不保存图片、结果或日志历史；图库权限只用于读取共享 MediaStore 中的图片，无法访问其他应用的私有目录。
 - 身份证候选必须是连续的 17 位 ASCII 数字加 1 位数字或 `X/x`；不修补空格、横杠、全角字符和 `O/I` 等 OCR 混淆，再在 Kotlin 中完成省级代码、日期、顺序码和校验位检查。
-- 有效期限只按字符格式提取精确的 `YYYY.MM.DD-YYYY.MM.DD` 或 `YYYY.MM.DD-长期`，不校验日历值和起止顺序；多项结果去重后按识别顺序保留。
+- 有效期限只按字符格式匹配精确的 `YYYY.MM.DD-YYYY.MM.DD` 或 `YYYY.MM.DD-长期`，不校验日历值和起止顺序；返回时删除日期中的点，输出为 `YYYYMMDD-YYYYMMDD` 或 `YYYYMMDD-长期`，多项结果去重后按识别顺序保留。
 - 每次识别开始时读取剪贴板且只提取大陆 11 位手机号。结果区依次显示身份证号、手机号和有效期限；复制全部时依次包含三项关键信息及按图片分隔的完整 OCR 文字。
 - OCR 文字框按纵向位置合并，同一视觉行按从左到右输出；缩略图不显示文件名，点击后由原生全屏查看，关闭时立即回收显示 Bitmap。
 - 开发者日志默认关闭，双击页头终端图标后才采集详细阶段耗时和进程内存，关闭时跳过所有深度采样。日志开启后会记录 Java/Native/Graphics/Code/Stack 的 PSS 构成、`/proc/self/smaps` 映射分类、Native 分配区、匿名页、模型文件、线程/FD、ART GC、系统可用内存和进程 trim 状态；识别后自动在 0.5 秒、2 秒、10 秒及进后台/回前台时复测，并输出回收比例、映射增量和高水位/疑似泄漏判断。

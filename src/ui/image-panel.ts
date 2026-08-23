@@ -72,6 +72,7 @@ export class ImagePanel {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "image-tile";
+      button.dataset.order = String(position + 1);
       button.setAttribute("aria-label", `查看第 ${position + 1} 张原图`);
       button.style.animationDelay = `${Math.min(position, 10) * 24}ms`;
       const preview = document.createElement("img");
@@ -107,7 +108,7 @@ export class ImagePanel {
   private updatePickerCopy(): void {
     this.selectLabel.textContent = this.hasSelection ? "重新选择" : "选择图片";
     this.selectDetail.textContent = this.hasSelection
-      ? "点击缩略图可全屏查看原图"
+      ? "角标顺序即识别顺序"
       : "单张或多张，最多 4 张";
   }
 

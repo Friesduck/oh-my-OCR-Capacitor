@@ -16,9 +16,9 @@ class ValidityPeriodParserTest {
 
         assertEquals(
             listOf(
-                "2020.08.20-2030.08.20",
-                "2030.08.21-2040.08.21",
-                "2024.01.01-长期",
+                "20200820-20300820",
+                "20300821-20400821",
+                "20240101-长期",
             ),
             ValidityPeriodParser.extract(lines),
         )
@@ -40,7 +40,7 @@ class ValidityPeriodParserTest {
     @Test
     fun doesNotValidateCalendarValuesOrDateOrder() {
         assertEquals(
-            listOf("2021.99.99-2000.00.00"),
+            listOf("20219999-20000000"),
             ValidityPeriodParser.extract(listOf("期限2021.99.99-2000.00.00")),
         )
     }

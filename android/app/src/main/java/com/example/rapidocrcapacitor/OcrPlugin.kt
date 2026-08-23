@@ -1,5 +1,6 @@
 package com.example.rapidocrcapacitor
 
+import android.Manifest
 import android.app.Activity
 import android.app.Dialog
 import android.content.ClipData
@@ -13,6 +14,7 @@ import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.system.Os
 import android.system.OsConstants
@@ -30,15 +32,33 @@ import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
+import com.getcapacitor.PermissionState
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.getcapacitor.annotation.Permission
+import com.getcapacitor.annotation.PermissionCallback
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-@CapacitorPlugin(name = "NativeOcr")
+private const val IMAGE_PERMISSION_ALIAS = "images"
+private const val LEGACY_IMAGE_PERMISSION_ALIAS = "legacyImages"
+
+@CapacitorPlugin(
+    name = "NativeOcr",
+    permissions = [
+        Permission(
+            alias = IMAGE_PERMISSION_ALIAS,
+            strings = [Manifest.permission.READ_MEDIA_IMAGES],
+        ),
+        Permission(
+            alias = LEGACY_IMAGE_PERMISSION_ALIAS,
+            strings = [Manifest.permission.READ_EXTERNAL_STORAGE],
+        ),
+    ],
+)
 class OcrPlugin : Plugin() {
     private val executor = Executors.newSingleThreadExecutor()
     private val recognitionInProgress = AtomicBoolean(false)
@@ -68,19 +88,43 @@ class OcrPlugin : Plugin() {
             return
         }
 
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "image/*"
+        val permissionAlias = imagePermissionAlias()
+        if (getPermissionState(permissionAlias) != PermissionState.GRANTED) {
+            requestPermissionForAlias(permissionAlias, call, "handleImagePermission")
+            return
+        }
+
+        openSystemGallery(call)
+    }
+
+    @PermissionCallback
+    private fun handleImagePermission(call: PluginCall) {
+        if (getPermissionState(imagePermissionAlias()) != PermissionState.GRANTED) {
+            call.reject("需要允许访问所有照片；如果只授权了部分照片，请在系统设置中改为允许所有照片")
+            return
+        }
+        openSystemGallery(call)
+    }
+
+    private fun openSystemGallery(call: PluginCall) {
+        val intent = Intent(Intent.ACTION_PICK).apply {
+            setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
             putExtra(Intent.EXTRA_MIME_TYPES, SUPPORTED_MIME_TYPES.toTypedArray())
             putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
         runCatching {
             startActivityForResult(call, intent, "handleImagePicked")
         }.onFailure { error ->
-            reject(call, error, "无法打开系统图片选择器")
+            reject(call, error, "无法打开系统图库")
         }
+    }
+
+    private fun imagePermissionAlias(): String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        IMAGE_PERMISSION_ALIAS
+    } else {
+        LEGACY_IMAGE_PERMISSION_ALIAS
     }
 
     @ActivityCallback
@@ -775,6 +819,7 @@ class OcrPlugin : Plugin() {
     private fun selectedUris(intent: Intent?): List<Uri> {
         if (intent == null) return emptyList()
         val uris = mutableListOf<Uri>()
+        // ClipData 的返回顺序是预览编号、OCR 遍历和结果分组共用的唯一顺序。
         intent.clipData?.let { clipData ->
             repeat(clipData.itemCount) { index ->
                 clipData.getItemAt(index).uri?.let(uris::add)
@@ -1024,7 +1069,7 @@ internal object ValidityPeriodParser {
 
         lines.forEach { line ->
             candidatePattern.findAll(line).forEach { match ->
-                val candidate = match.groupValues[1]
+                val candidate = match.groupValues[1].replace(".", "")
                 if (seen.add(candidate)) results += candidate
             }
         }

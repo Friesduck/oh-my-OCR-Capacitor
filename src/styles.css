@@ -305,6 +305,27 @@ main {
   transition: transform 140ms ease, box-shadow 140ms ease;
 }
 
+.image-tile::after {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  height: 23px;
+  border: 2px solid rgba(255, 255, 255, 0.92);
+  border-radius: 50%;
+  color: #ffffff;
+  background: var(--accent);
+  box-shadow: 0 3px 9px rgba(21, 24, 36, 0.22);
+  content: attr(data-order);
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+  pointer-events: none;
+}
+
 .image-tile:active:not(:disabled) {
   transform: scale(0.94);
   box-shadow: none;
