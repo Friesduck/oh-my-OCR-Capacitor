@@ -18,18 +18,36 @@ function cleanLine(value: string): string {
   return value.replace(/[\t ]+/g, " ").trim();
 }
 
-function isIdentifierOnly(value: string, identifiers: Set<string>): boolean {
-  const compact = value.replace(/[\s\-－—·]/g, "").toUpperCase();
-  return identifiers.has(compact);
+function uniqueClean(values: string[]): string[] {
+  return [...new Set(values.map(cleanLine).filter(Boolean))];
+}
+
+export function recognitionIdentifiers(result: RecognitionResult): string {
+  return uniqueClean(result.idNumbers).join("、") || "未识别到";
+}
+
+export function recognitionPhone(result: RecognitionResult): string {
+  return cleanLine(result.clipboardPhone || "") || "未识别到";
+}
+
+export function composeOcrBody(result: RecognitionResult): string {
+  const groups = result.textGroups.length > 0 ? result.textGroups : [result.textLines];
+  const visibleGroups = groups.map((group) => group.map(cleanLine).filter(Boolean));
+  if (visibleGroups.length === 1) return visibleGroups[0].join("\n");
+
+  return visibleGroups
+    .map((lines, index) => [`图片 ${index + 1}`, ...lines].join("\n"))
+    .join("\n\n------------------------------\n\n");
 }
 
 export function composeRecognitionText(result: RecognitionResult): string {
-  const identifiers = [...new Set(result.idNumbers.map(cleanLine).filter(Boolean))];
-  const identifierSet = new Set(identifiers.map((value) => value.toUpperCase()));
-  const bodyLines = result.textLines
-    .map(cleanLine)
-    .filter((line) => line && !isIdentifierOnly(line, identifierSet));
-
-  const lines = identifiers.length > 0 ? [identifiers.join(" "), ...bodyLines] : bodyLines;
-  return lines.join("\n");
+  const body = composeOcrBody(result) || "未识别到文字";
+  return [
+    `身份证号：${recognitionIdentifiers(result)}`,
+    `手机号：${recognitionPhone(result)}`,
+    "",
+    "------------------------------",
+    "",
+    body,
+  ].join("\n");
 }

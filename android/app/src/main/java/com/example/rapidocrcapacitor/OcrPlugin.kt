@@ -1,12 +1,14 @@
 package com.example.rapidocrcapacitor
 
 import android.app.Activity
+import android.app.Dialog
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
@@ -16,10 +18,13 @@ import android.system.Os
 import android.system.OsConstants
 import android.util.Base64
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.widget.ImageView
 import androidx.activity.result.ActivityResult
 import androidx.exifinterface.media.ExifInterface
-import com.benjaminwan.ocrlibrary.OcrEngine
-import com.benjaminwan.ocrlibrary.models.OcrResult
+import com.example.rapidocrcapacitor.ocr.OptimizedOcrEngine
+import com.example.rapidocrcapacitor.ocr.OptimizedOcrResult
 import com.getcapacitor.JSArray
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -40,10 +45,12 @@ class OcrPlugin : Plugin() {
     private val diagnosticRecognitionSequence = AtomicInteger(0)
 
     @Volatile
-    private var selectedImageUri: Uri? = null
+    private var selectedImageUris: List<Uri> = emptyList()
 
     @Volatile
-    private var ocrEngine: OcrEngine? = null
+    private var ocrEngine: OptimizedOcrEngine? = null
+
+    private var fullScreenDialog: Dialog? = null
 
     @Volatile
     private var modelIsWarm = false
@@ -65,7 +72,8 @@ class OcrPlugin : Plugin() {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "image/*"
             putExtra(Intent.EXTRA_MIME_TYPES, SUPPORTED_MIME_TYPES.toTypedArray())
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
 
         runCatching {
@@ -83,41 +91,54 @@ class OcrPlugin : Plugin() {
             return
         }
 
-        val uri = result.data?.data
-        if (uri == null) {
+        val uris = selectedUris(result.data)
+        if (uris.isEmpty()) {
             call.reject("系统图片选择器没有返回有效图片")
+            return
+        }
+        if (uris.size > MAX_SELECTED_IMAGES) {
+            call.reject("一次最多选择 $MAX_SELECTED_IMAGES 张图片")
             return
         }
 
         executor.execute {
             var imageBytes: ByteArray? = null
             try {
-                val info = queryImageInfo(uri)
-                info.sizeBytes?.let { size ->
-                    require(size <= MAX_IMAGE_BYTES) { "图片不能超过 25 MB" }
-                }
-                info.mimeType?.let { mimeType ->
-                    require(mimeType in SUPPORTED_MIME_TYPES) { "不支持的图片格式：$mimeType" }
-                }
+                val previews = JSArray()
+                var totalSizeBytes = 0L
+                uris.forEachIndexed { index, uri ->
+                    val info = queryImageInfo(uri)
+                    info.sizeBytes?.let { size ->
+                        require(size <= MAX_IMAGE_BYTES) { "第 ${index + 1} 张图片不能超过 25 MB" }
+                    }
+                    info.mimeType?.let { mimeType ->
+                        require(mimeType in SUPPORTED_MIME_TYPES) { "第 ${index + 1} 张图片格式不受支持" }
+                    }
 
-                val bytes = readImageBytes(uri)
-                imageBytes = bytes
-                val previewResult = createPreview(bytes)
-                selectedImageUri = uri
+                    val bytes = readImageBytes(uri)
+                    imageBytes = bytes
+                    val preview = createPreview(bytes)
+                    totalSizeBytes += info.sizeBytes ?: bytes.size.toLong()
+                    previews.put(
+                        JSObject().apply {
+                            put("index", index)
+                            put("previewDataUrl", preview.dataUrl)
+                        },
+                    )
+                    bytes.fill(0)
+                    imageBytes = null
+                }
+                selectedImageUris = uris
 
                 val response = JSObject().apply {
                     put("cancelled", false)
-                    put("fileName", info.fileName)
-                    put("mimeType", previewResult.mimeType)
-                    info.sizeBytes?.let { put("sizeBytes", it) }
-                    put("previewDataUrl", previewResult.dataUrl)
+                    put("images", previews)
+                    put("totalSizeBytes", totalSizeBytes)
                 }
                 call.resolve(response)
             } catch (error: OutOfMemoryError) {
-                selectedImageUri = null
-                reject(call, error, "图片预览时内存不足，请选择分辨率更低的图片")
+                reject(call, error, "图片预览时内存不足，请减少选择数量或图片分辨率")
             } catch (error: Throwable) {
-                selectedImageUri = null
                 reject(call, error, "读取图片失败")
             } finally {
                 imageBytes?.fill(0)
@@ -131,8 +152,56 @@ class OcrPlugin : Plugin() {
             call.reject("当前正在识别，暂时不能移除图片")
             return
         }
-        selectedImageUri = null
+        selectedImageUris = emptyList()
         call.resolve()
+    }
+
+    @PluginMethod
+    fun showSelectedImage(call: PluginCall) {
+        if (recognitionInProgress.get()) {
+            call.reject("当前正在识别，请稍后查看原图")
+            return
+        }
+        val uri = selectedImageUris.getOrNull(call.getInt("index") ?: -1)
+        if (uri == null) {
+            call.reject("所选图片已经失效")
+            return
+        }
+
+        executor.execute {
+            var bytes: ByteArray? = null
+            var bitmap: Bitmap? = null
+            try {
+                bytes = readImageBytes(uri)
+                val decoded = decodeSampledBitmap(bytes, MAX_FULLSCREEN_SIDE).bitmap
+                bitmap = try {
+                    applyExifOrientation(decoded, bytes)
+                } catch (error: Throwable) {
+                    decoded.recycleSafely()
+                    throw error
+                }
+                val displayBitmap = checkNotNull(bitmap)
+                activity.runOnUiThread {
+                    if (activity.isFinishing || activity.isDestroyed) {
+                        displayBitmap.recycleSafely()
+                        call.reject("当前页面已经关闭")
+                        return@runOnUiThread
+                    }
+                    runCatching { showFullScreenBitmap(displayBitmap) }
+                        .onSuccess { call.resolve() }
+                        .onFailure { error ->
+                            displayBitmap.recycleSafely()
+                            reject(call, error, "无法打开原图")
+                        }
+                }
+                bitmap = null
+            } catch (error: Throwable) {
+                bitmap.recycleSafely()
+                reject(call, error, "无法打开原图")
+            } finally {
+                bytes?.fill(0)
+            }
+        }
     }
 
     @PluginMethod
@@ -195,9 +264,9 @@ class OcrPlugin : Plugin() {
 
     @PluginMethod
     fun recognizeSelected(call: PluginCall) {
-        val uri = selectedImageUri
-        if (uri == null) {
-            call.reject("请先选择一张图片")
+        val imageUris = selectedImageUris.toList()
+        if (imageUris.isEmpty()) {
+            call.reject("请先选择图片")
             return
         }
         if (!recognitionInProgress.compareAndSet(false, true)) {
@@ -205,6 +274,7 @@ class OcrPlugin : Plugin() {
             return
         }
         val recognitionId = diagnosticRecognitionSequence.incrementAndGet()
+        val clipboardPhone = readClipboardPhone()
 
         executor.execute {
             val requestStartedAtNs = SystemClock.elapsedRealtimeNanos()
@@ -223,97 +293,125 @@ class OcrPlugin : Plugin() {
                     true,
                 )
 
-                val imageReadStartedAtNs = SystemClock.elapsedRealtimeNanos()
-                val bytes = readImageBytes(uri)
-                imageBytes = bytes
-                val imageReadMs = elapsedMs(imageReadStartedAtNs)
-                captureMemorySnapshot(
-                    memorySnapshots,
-                    "imageBytesRead",
-                    requestStartedAtNs,
-                    collectDiagnostics,
-                )
-
-                val imageDecodeStartedAtNs = SystemClock.elapsedRealtimeNanos()
-                val decodedImage = decodeSampledBitmap(bytes, MAX_DECODE_SIDE)
-                val decodedBitmap = decodedImage.bitmap
-                val imageDecodeMs = elapsedMs(imageDecodeStartedAtNs)
-                val decodedWidth = decodedBitmap.width
-                val decodedHeight = decodedBitmap.height
-                val decodedBitmapBytes = decodedBitmap.allocationByteCount.toLong()
-
-                val orientationStartedAtNs = SystemClock.elapsedRealtimeNanos()
-                val orientedBitmap = try {
-                    applyExifOrientation(decodedBitmap, bytes)
-                } catch (error: Throwable) {
-                    decodedBitmap.recycleSafely()
-                    throw error
-                }
-                bitmap = orientedBitmap
-                val orientedWidth = orientedBitmap.width
-                val orientedHeight = orientedBitmap.height
-                val orientedBitmapBytes = orientedBitmap.allocationByteCount.toLong()
-                val orientationMs = elapsedMs(orientationStartedAtNs)
-                captureMemorySnapshot(
-                    memorySnapshots,
-                    "imageReady",
-                    requestStartedAtNs,
-                    collectDiagnostics,
-                )
-
                 val modelWasLoaded = modelIsWarm
                 val engineInitStartedAtNs = SystemClock.elapsedRealtimeNanos()
                 val engine = getEngine()
                 val engineInitMs = elapsedMs(engineInitStartedAtNs)
-                captureMemorySnapshot(
-                    memorySnapshots,
-                    "engineReady",
-                    requestStartedAtNs,
-                    collectDiagnostics,
-                    true,
-                )
+                var sourceImageBytes = 0L
+                var sourceWidth = 0
+                var sourceHeight = 0
+                var decodeSampleSize = 1
+                var decodedWidth = 0
+                var decodedHeight = 0
+                var decodedBitmapBytes = 0L
+                var orientedWidth = 0
+                var orientedHeight = 0
+                var orientedBitmapBytes = 0L
+                var detectionCount = 0
+                var recognitionCount = 0
+                var imageReadMs = 0L
+                var imageDecodeMs = 0L
+                var orientationMs = 0L
+                var inferenceWallMs = 0L
+                var postprocessMs = 0L
+                var ocrElapsedMs = 0L
+                val textGroups = mutableListOf<List<String>>()
+                val idNumbers = linkedSetOf<String>()
 
-                val inferenceStartedAtNs = SystemClock.elapsedRealtimeNanos()
-                val nativeResult = engine.detect(
-                    orientedBitmap,
-                    false,
-                    OCR_MAX_SIDE_LEN,
-                    50,
-                    0.5f,
-                    0.3f,
-                    2.0f,
-                    true,
-                    true,
-                )
-                modelIsWarm = true
-                val inferenceWallMs = elapsedMs(inferenceStartedAtNs)
-                captureMemorySnapshot(
-                    memorySnapshots,
-                    "inferenceComplete",
-                    requestStartedAtNs,
-                    collectDiagnostics,
-                    true,
-                )
+                imageUris.forEachIndexed { index, uri ->
+                    try {
+                        val imageReadStartedAtNs = SystemClock.elapsedRealtimeNanos()
+                        val bytes = readImageBytes(uri)
+                        imageBytes = bytes
+                        imageReadMs += elapsedMs(imageReadStartedAtNs)
+                        sourceImageBytes += bytes.size.toLong()
+                        if (index == 0) {
+                            captureMemorySnapshot(
+                                memorySnapshots,
+                                "imageBytesRead",
+                                requestStartedAtNs,
+                                collectDiagnostics,
+                            )
+                        }
 
-                val postprocessStartedAtNs = SystemClock.elapsedRealtimeNanos()
-                val resultBitmapBytes = nativeResult.boxImage.allocationByteCount.toLong()
-                val detectionCount = nativeResult.detResults.size
-                val recognitionCount = nativeResult.recResults.size
-                val textLines = try {
-                    composeTextLines(nativeResult)
-                } finally {
-                    if (nativeResult.boxImage !== orientedBitmap) {
-                        nativeResult.boxImage.recycleSafely()
+                        val decodeStartedAtNs = SystemClock.elapsedRealtimeNanos()
+                        val decoded = decodeSampledBitmap(bytes, MAX_DECODE_SIDE)
+                        val decodedBitmap = decoded.bitmap
+                        imageDecodeMs += elapsedMs(decodeStartedAtNs)
+                        sourceWidth = maxOf(sourceWidth, decoded.sourceWidth)
+                        sourceHeight = maxOf(sourceHeight, decoded.sourceHeight)
+                        decodeSampleSize = maxOf(decodeSampleSize, decoded.sampleSize)
+                        decodedWidth = maxOf(decodedWidth, decodedBitmap.width)
+                        decodedHeight = maxOf(decodedHeight, decodedBitmap.height)
+                        decodedBitmapBytes += decodedBitmap.allocationByteCount.toLong()
+
+                        val orientationStartedAtNs = SystemClock.elapsedRealtimeNanos()
+                        val orientedBitmap = try {
+                            applyExifOrientation(decodedBitmap, bytes)
+                        } catch (error: Throwable) {
+                            decodedBitmap.recycleSafely()
+                            throw error
+                        }
+                        bitmap = orientedBitmap
+                        orientedWidth = maxOf(orientedWidth, orientedBitmap.width)
+                        orientedHeight = maxOf(orientedHeight, orientedBitmap.height)
+                        orientedBitmapBytes += orientedBitmap.allocationByteCount.toLong()
+                        orientationMs += elapsedMs(orientationStartedAtNs)
+                        if (index == 0) {
+                            captureMemorySnapshot(
+                                memorySnapshots,
+                                "imageReady",
+                                requestStartedAtNs,
+                                collectDiagnostics,
+                            )
+                            captureMemorySnapshot(
+                                memorySnapshots,
+                                "engineReady",
+                                requestStartedAtNs,
+                                collectDiagnostics,
+                                true,
+                            )
+                        }
+
+                        val inferenceStartedAtNs = SystemClock.elapsedRealtimeNanos()
+                        val nativeResult = engine.detect(
+                            orientedBitmap,
+                            false,
+                            OCR_MAX_SIDE_LEN,
+                            50,
+                            0.5f,
+                            0.3f,
+                            2.0f,
+                            true,
+                            true,
+                        )
+                        modelIsWarm = true
+                        inferenceWallMs += elapsedMs(inferenceStartedAtNs)
+                        ocrElapsedMs += nativeResult.fullTimeMs
+
+                        val postprocessStartedAtNs = SystemClock.elapsedRealtimeNanos()
+                        val lines = composeTextLines(nativeResult)
+                        textGroups += lines
+                        idNumbers += IdCardParser.extract(lines)
+                        detectionCount += nativeResult.detResults.size
+                        recognitionCount += nativeResult.recResults.size
+                        postprocessMs += elapsedMs(postprocessStartedAtNs)
+                        if (index == imageUris.lastIndex) {
+                            captureMemorySnapshot(
+                                memorySnapshots,
+                                "inferenceComplete",
+                                requestStartedAtNs,
+                                collectDiagnostics,
+                                true,
+                            )
+                        }
+                    } finally {
+                        bitmap.recycleSafely()
+                        bitmap = null
+                        imageBytes?.fill(0)
+                        imageBytes = null
                     }
                 }
-                val idNumbers = IdCardParser.extract(textLines)
-                val postprocessMs = elapsedMs(postprocessStartedAtNs)
-                val ocrElapsedMs = nativeResult.fullTime.toLong()
-
-                imageBytes?.fill(0)
-                imageBytes = null
-                bitmap.recycleSafely()
-                bitmap = null
                 lastResourcesReleasedAtNs = SystemClock.elapsedRealtimeNanos()
                 captureMemorySnapshot(
                     memorySnapshots,
@@ -327,17 +425,18 @@ class OcrPlugin : Plugin() {
                     put("recognitionId", recognitionId)
                     put("startedAtEpochMs", startedAtEpochMs)
                     put("modelWasLoaded", modelWasLoaded)
-                    put("sourceImageBytes", bytes.size)
-                    put("sourceWidth", decodedImage.sourceWidth)
-                    put("sourceHeight", decodedImage.sourceHeight)
-                    put("decodeSampleSize", decodedImage.sampleSize)
+                    put("imageCount", imageUris.size)
+                    put("sourceImageBytes", sourceImageBytes)
+                    put("sourceWidth", sourceWidth)
+                    put("sourceHeight", sourceHeight)
+                    put("decodeSampleSize", decodeSampleSize)
                     put("decodedWidth", decodedWidth)
                     put("decodedHeight", decodedHeight)
                     put("decodedBitmapBytes", decodedBitmapBytes)
                     put("orientedWidth", orientedWidth)
                     put("orientedHeight", orientedHeight)
                     put("orientedBitmapBytes", orientedBitmapBytes)
-                    put("resultBitmapBytes", resultBitmapBytes)
+                    put("resultBitmapBytes", 0L)
                     put("detectionCount", detectionCount)
                     put("recognitionCount", recognitionCount)
                     put("ocrMaxSideLen", OCR_MAX_SIDE_LEN)
@@ -350,9 +449,14 @@ class OcrPlugin : Plugin() {
                     put("nativeTotalMs", elapsedMs(requestStartedAtNs))
                     put("memorySnapshots", memorySnapshots)
                 }
+                val textGroupArray = JSArray().apply {
+                    textGroups.forEach { put(JSArray(it)) }
+                }
                 val response = JSObject().apply {
-                    put("idNumbers", JSArray(idNumbers))
-                    put("textLines", JSArray(textLines))
+                    put("idNumbers", JSArray(idNumbers.toList()))
+                    put("textLines", JSArray(textGroups.flatten()))
+                    put("textGroups", textGroupArray)
+                    clipboardPhone?.let { put("clipboardPhone", it) }
                     put("elapsedMs", ocrElapsedMs)
                     put("metrics", metrics)
                 }
@@ -396,21 +500,25 @@ class OcrPlugin : Plugin() {
     }
 
     override fun handleOnDestroy() {
-        selectedImageUri = null
+        selectedImageUris = emptyList()
+        fullScreenDialog?.dismiss()
+        fullScreenDialog = null
+        val engine = ocrEngine
         ocrEngine = null
         modelIsWarm = false
         diagnosticsEnabled = false
         lastResourcesReleasedAtNs = 0L
-        executor.shutdownNow()
+        executor.execute { runCatching { engine?.close() } }
+        executor.shutdown()
         super.handleOnDestroy()
     }
 
-    private fun getEngine(): OcrEngine {
+    private fun getEngine(): OptimizedOcrEngine {
         ocrEngine?.let { return it }
         return synchronized(this) {
             ocrEngine ?: run {
                 loadOpenCv()
-                OcrEngine(context.applicationContext).also { ocrEngine = it }
+                OptimizedOcrEngine(context.applicationContext).also { ocrEngine = it }
             }
         }
     }
@@ -442,27 +550,22 @@ class OcrPlugin : Plugin() {
     }
 
     private fun queryImageInfo(uri: Uri): ImageInfo {
-        var fileName = "已选择图片"
         var sizeBytes: Long? = null
         context.contentResolver.query(
             uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+            arrayOf(OpenableColumns.SIZE),
             null,
             null,
             null,
         )?.use { cursor ->
             if (cursor.moveToFirst()) {
-                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
-                if (nameIndex >= 0 && !cursor.isNull(nameIndex)) {
-                    fileName = cursor.getString(nameIndex).orEmpty().ifBlank { fileName }
-                }
                 if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) {
                     sizeBytes = cursor.getLong(sizeIndex).takeIf { it >= 0 }
                 }
             }
         }
-        return ImageInfo(fileName, sizeBytes, context.contentResolver.getType(uri))
+        return ImageInfo(sizeBytes, context.contentResolver.getType(uri))
     }
 
     private fun readImageBytes(uri: Uri): ByteArray {
@@ -501,7 +604,6 @@ class OcrPlugin : Plugin() {
             val previewBytes = output.toByteArray()
             try {
                 PreviewResult(
-                    mimeType = detectMimeType(imageBytes),
                     dataUrl = "data:image/jpeg;base64," +
                         Base64.encodeToString(previewBytes, Base64.NO_WRAP),
                 )
@@ -511,13 +613,6 @@ class OcrPlugin : Plugin() {
         } finally {
             orientedBitmap.recycleSafely()
         }
-    }
-
-    private fun detectMimeType(imageBytes: ByteArray): String {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size, bounds)
-        return bounds.outMimeType?.takeIf { it in SUPPORTED_MIME_TYPES }
-            ?: error("请选择有效的 JPG、PNG 或 WEBP 图片")
     }
 
     private fun decodeSampledBitmap(imageBytes: ByteArray, maxSide: Int): DecodedBitmap {
@@ -606,7 +701,7 @@ class OcrPlugin : Plugin() {
         return cleaned
     }
 
-    private fun composeTextLines(result: OcrResult): List<String> {
+    private fun composeTextLines(result: OptimizedOcrResult): List<String> {
         val positionedText = mutableListOf<PositionedText>()
 
         result.recResults.forEachIndexed { index, recognition ->
@@ -670,14 +765,82 @@ class OcrPlugin : Plugin() {
         if (this != null && !isRecycled) recycle()
     }
 
+    private fun selectedUris(intent: Intent?): List<Uri> {
+        if (intent == null) return emptyList()
+        val uris = mutableListOf<Uri>()
+        intent.clipData?.let { clipData ->
+            repeat(clipData.itemCount) { index ->
+                clipData.getItemAt(index).uri?.let(uris::add)
+            }
+        }
+        if (uris.isEmpty()) intent.data?.let(uris::add)
+        return uris.distinctBy(Uri::toString)
+    }
+
+    private fun readClipboardPhone(): String? = runCatching {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val text = clipboard.primaryClip
+            ?.takeIf { it.itemCount > 0 }
+            ?.getItemAt(0)
+            ?.coerceToText(context)
+            ?.toString()
+            .orEmpty()
+        ClipboardPhoneParser.extract(text)
+    }.getOrNull()
+
+    private fun showFullScreenBitmap(bitmap: Bitmap) {
+        fullScreenDialog?.dismiss()
+        val dialog = Dialog(activity, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+        val image = ImageView(activity).apply {
+            setBackgroundColor(Color.BLACK)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setImageBitmap(bitmap)
+            alpha = 0f
+            scaleX = 0.985f
+            scaleY = 0.985f
+            contentDescription = "点击关闭原图"
+        }
+        fun close() {
+            image.animate()
+                .alpha(0f)
+                .scaleX(0.985f)
+                .scaleY(0.985f)
+                .setDuration(160L)
+                .withEndAction { if (dialog.isShowing) dialog.dismiss() }
+                .start()
+        }
+        image.setOnClickListener { close() }
+        dialog.setContentView(
+            image,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        dialog.setOnDismissListener {
+            image.setImageDrawable(null)
+            bitmap.recycleSafely()
+            if (fullScreenDialog === dialog) fullScreenDialog = null
+        }
+        dialog.setOnShowListener {
+            @Suppress("DEPRECATION")
+            dialog.window?.decorView?.systemUiVisibility = (
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                )
+            image.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(200L).start()
+        }
+        dialog.show()
+        fullScreenDialog = dialog
+    }
+
     private data class ImageInfo(
-        val fileName: String,
         val sizeBytes: Long?,
         val mimeType: String?,
     )
 
     private data class PreviewResult(
-        val mimeType: String,
         val dataUrl: String,
     )
 
@@ -692,16 +855,30 @@ class OcrPlugin : Plugin() {
         private const val TAG = "NativeOcr"
         private const val OPENCV_LIBRARY_NAME = "opencv_java4"
         private const val MAX_IMAGE_BYTES = 25 * 1024 * 1024
+        private const val MAX_SELECTED_IMAGES = 45
         private const val MAX_CLIPBOARD_CHARS = 500_000
         private const val MAX_SOURCE_SIDE = 50_000
         private const val MAX_DECODE_SIDE = 2_400
         private const val OCR_MAX_SIDE_LEN = 1_600
-        private const val MAX_PREVIEW_SIDE = 1_000
-        private const val PREVIEW_JPEG_QUALITY = 80
+        private const val MAX_PREVIEW_SIDE = 240
+        private const val MAX_FULLSCREEN_SIDE = 4_096
+        private const val PREVIEW_JPEG_QUALITY = 72
         private const val STREAM_BUFFER_SIZE = 16 * 1024
         private val DIAGNOSTIC_STAGE_PATTERN = Regex("[A-Za-z0-9_-]{1,40}")
         private val SUPPORTED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp")
     }
+}
+
+internal object ClipboardPhoneParser {
+    private val phonePattern = Regex(
+        "(?<!\\d)(?:\\+?86[\\s-]?)?(1[3-9](?:[\\s-]?\\d){9})(?!\\d)",
+    )
+
+    fun extract(text: String): String? = phonePattern.find(text)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.filter(Char::isDigit)
+        ?.takeIf { it.length == 11 }
 }
 
 internal data class PositionedText(

@@ -1,15 +1,14 @@
 import { Capacitor } from "@capacitor/core";
 import {
-  ChevronRight,
   ClipboardCopy,
+  ContactRound,
   Copy,
   ImagePlus,
-  Maximize2,
-  Minimize2,
+  Phone,
+  Plus,
   ScanText,
   SquareTerminal,
   Trash2,
-  X,
   createIcons,
 } from "lucide";
 import { DeveloperLog } from "./developer-log";
@@ -32,20 +31,20 @@ const imagePanel = new ImagePanel({
   onSelected: (selection) => {
     resultPanel.reset();
     recognizeButton.disabled = false;
-    status.show("图片已就绪", "success");
-    developerLog.recordSelection(selection.fileName, selection.sizeBytes);
+    const imageCount = selection.images?.length || 0;
+    status.show(`已选择 ${imageCount} 张图片`, "success");
+    developerLog.recordSelection(imageCount, selection.totalSizeBytes);
   },
   onCleared: () => {
     resultPanel.reset();
     recognizeButton.disabled = true;
     status.clear();
-    developerLog.append("已移除图片");
+    developerLog.append("已清空所选图片");
   },
   onError: (message) => {
-    resultPanel.reset();
-    recognizeButton.disabled = true;
+    recognizeButton.disabled = !imagePanel.hasSelection;
     status.show(message, "error");
-    developerLog.append(`图片选择失败：${message}`);
+    developerLog.append(`图片操作失败：${message}`);
   },
 });
 
@@ -87,16 +86,15 @@ recognizeButton.addEventListener("click", async () => {
 
 createIcons({
   icons: {
-    ChevronRight,
     ClipboardCopy,
+    ContactRound,
     Copy,
     ImagePlus,
-    Maximize2,
-    Minimize2,
+    Phone,
+    Plus,
     ScanText,
     SquareTerminal,
     Trash2,
-    X,
   },
   attrs: {
     width: "18",

@@ -82,6 +82,7 @@ export type RecognitionMetrics = {
   recognitionId: number;
   startedAtEpochMs: number;
   modelWasLoaded: boolean;
+  imageCount: number;
   sourceImageBytes: number;
   sourceWidth: number;
   sourceHeight: number;
@@ -126,22 +127,28 @@ export type MemoryDiagnosticsProbe = {
 export type RecognitionResult = {
   idNumbers: string[];
   textLines: string[];
+  textGroups: string[][];
+  clipboardPhone?: string;
   elapsedMs: number;
   metrics: RecognitionMetrics;
 };
 
+export type SelectedImagePreview = {
+  index: number;
+  previewDataUrl: string;
+};
+
 export type PickImageResult = {
   cancelled: boolean;
-  fileName?: string;
-  mimeType?: string;
-  sizeBytes?: number;
-  previewDataUrl?: string;
+  images?: SelectedImagePreview[];
+  totalSizeBytes?: number;
 };
 
 type NativeOcrPlugin = {
   pickImage(): Promise<PickImageResult>;
   recognizeSelected(): Promise<RecognitionResult>;
   clearSelection(): Promise<void>;
+  showSelectedImage(options: { index: number }): Promise<void>;
   setDiagnosticsEnabled(options: { enabled: boolean }): Promise<void>;
   captureMemoryDiagnostics(options: {
     stage: string;

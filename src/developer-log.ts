@@ -33,6 +33,7 @@ export class DeveloperLog {
   private sampleGeneration = 0;
   private previousSettledSnapshot?: MemorySnapshot;
   private currentMemoryContext?: RecognitionMemoryContext;
+  private sessionStartedAt = performance.now();
 
   constructor(private readonly status: StatusView) {
     this.toggleButton.addEventListener("click", () => this.handleToggleClick());
@@ -53,44 +54,42 @@ export class DeveloperLog {
     }
   }
 
-  recordSelection(fileName: string | undefined, sizeBytes: number | undefined): void {
-    this.append(`图片已选择：${fileName || "未命名"}，${formatFileSize(sizeBytes)}`);
+  recordSelection(imageCount: number, sizeBytes: number | undefined): void {
+    this.append(`图片 | 已选择 ${imageCount} 张，共 ${formatFileSize(sizeBytes)}`);
   }
 
   recordRecognitionStart(sequence: number): void {
     this.cancelIdleSamples();
-    this.append(`第 ${sequence} 次识别开始；已取消上一轮尚未执行的延迟采样`);
+    this.append(`识别 ${sequence} | 开始，先读取剪贴板手机号`);
   }
 
   recordRecognitionFailure(sequence: number, elapsedMs: number, message: string): void {
-    this.append(`第 ${sequence} 次识别失败（+${formatDuration(elapsedMs)}）：${message}`);
+    this.append(`识别 ${sequence} | 失败 | ${formatDuration(elapsedMs)} | ${message}`);
   }
 
   recordRecognitionSuccess(result: RecognitionResult, frontend: FrontendMetrics): void {
     if (!this.active) return;
     const report = recognitionReport(result, frontend, this.previousSettledSnapshot);
-    this.appendLines(report.lines);
+    this.appendBlock(`识别 ${result.metrics.recognitionId} | 完成`, report.lines);
     if (!report.context) return;
 
     this.currentMemoryContext = report.context;
     this.previousSettledSnapshot = report.context.released;
-    this.append("回收观察：将在 0.5 秒、2 秒、10 秒后继续采样；这些采样不阻塞识别结果返回");
+    this.append("内存观察 | 0.5 秒、2 秒、10 秒后自动复测，请等待 10 秒再开始下一轮");
     this.scheduleIdleSamples(report.context.recognitionId);
   }
 
   append(message: string): void {
     if (!this.active) return;
 
-    const line = `${new Date().toISOString()}  ${message}`;
-    this.lines.push(line);
-    if (this.lines.length > LOG_LINE_LIMIT) this.lines.splice(0, this.lines.length - LOG_LINE_LIMIT);
-    this.output.textContent = this.lines.join("\n");
-    this.copyButton.disabled = false;
-    this.output.scrollTop = this.output.scrollHeight;
+    this.lines.push(`${this.elapsedLabel()}  ${message}`);
+    this.render();
   }
 
-  private appendLines(lines: string[]): void {
-    lines.forEach((line) => this.append(line));
+  private appendBlock(title: string, lines: string[]): void {
+    this.lines.push("", `${this.elapsedLabel()}  ── ${title} ──`);
+    this.lines.push(...lines.map((line) => `  ${line}`));
+    this.render();
   }
 
   private scheduleIdleSamples(recognitionId: number): void {
@@ -122,10 +121,12 @@ export class DeveloperLog {
       const context = this.currentMemoryContext;
       if (!context || context.recognitionId !== recognitionId) return;
 
-      this.appendLines(memorySnapshotLines(probe.snapshot, label));
-      this.append(memoryDeltaLine(`${label}相对刚释放时`, context.released, probe.snapshot));
+      this.appendBlock(label, [
+        ...memorySnapshotLines(probe.snapshot, label),
+        memoryDeltaLine("相对图片释放后", context.released, probe.snapshot),
+      ]);
       this.previousSettledSnapshot = probe.snapshot;
-      if (stage === "idle10s") this.appendLines(idleDiagnosisLines(context, probe.snapshot));
+      if (stage === "idle10s") this.appendBlock("10 秒结论", idleDiagnosisLines(context, probe.snapshot));
     } catch (error) {
       if (this.active && generation === this.sampleGeneration) {
         this.append(`内存·${label}采样失败：${errorMessage(error)}`);
@@ -139,7 +140,7 @@ export class DeveloperLog {
       if (!this.active || probe.skipped || !probe.snapshot) return;
       const environment = environmentLine(probe);
       if (environment) this.append(environment);
-      this.appendLines(memorySnapshotLines(probe.snapshot, "日志启用基线"));
+      this.appendBlock("初始内存", memorySnapshotLines(probe.snapshot, "日志启用基线"));
     } catch (error) {
       if (this.active) this.append(`日志启用基线采样失败：${errorMessage(error)}`);
     }
@@ -158,7 +159,7 @@ export class DeveloperLog {
         if (this.active && probe.reason) this.append(`生命周期采样跳过：${probe.reason}`);
         return;
       }
-      this.appendLines(memorySnapshotLines(probe.snapshot, label));
+      this.appendBlock(label, memorySnapshotLines(probe.snapshot, label));
       if (this.previousSettledSnapshot) {
         this.append(memoryDeltaLine(`${label}相对最近稳定值`, this.previousSettledSnapshot, probe.snapshot));
       }
@@ -200,9 +201,11 @@ export class DeveloperLog {
       this.toggleButton.classList.toggle("active", nextState);
       this.toggleButton.setAttribute("aria-pressed", String(nextState));
       if (nextState) {
+        this.sessionStartedAt = performance.now();
         this.previousSettledSnapshot = undefined;
         this.currentMemoryContext = undefined;
-        this.append("开发者日志已启用；开始采集详细内存组成、映射归因和延迟回收数据");
+        this.append(`日志已启用 | ${new Date().toLocaleString("zh-CN", { hour12: false })}`);
+        this.append("说明 | 左侧时间是启用日志后的相对时间；PSS 越低越好；+ 表示增长，− 表示回落");
         void this.captureEnableBaseline();
       }
     } catch (error) {
@@ -215,6 +218,7 @@ export class DeveloperLog {
 
   private clear(): void {
     this.lines.length = 0;
+    this.sessionStartedAt = performance.now();
     this.output.textContent = "";
     this.copyButton.disabled = true;
   }
@@ -229,5 +233,20 @@ export class DeveloperLog {
     } catch (error) {
       this.status.show(`日志复制失败：${errorMessage(error)}`, "error");
     }
+  }
+
+  private elapsedLabel(): string {
+    const elapsed = Math.max(0, performance.now() - this.sessionStartedAt);
+    const minutes = Math.floor(elapsed / 60_000).toString().padStart(2, "0");
+    const seconds = Math.floor((elapsed % 60_000) / 1_000).toString().padStart(2, "0");
+    const millis = Math.floor(elapsed % 1_000).toString().padStart(3, "0");
+    return `[${minutes}:${seconds}.${millis}]`;
+  }
+
+  private render(): void {
+    if (this.lines.length > LOG_LINE_LIMIT) this.lines.splice(0, this.lines.length - LOG_LINE_LIMIT);
+    this.output.textContent = this.lines.join("\n");
+    this.copyButton.disabled = this.lines.length === 0;
+    this.output.scrollTop = this.output.scrollHeight;
   }
 }

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#f2f3f5" />
+    <meta name="theme-color" content="#eef1f5" />
     <meta
       http-equiv="Content-Security-Policy"
       content="default-src 'self'; img-src 'self' data: blob:; style-src 'self'; script-src 'self'; connect-src 'self' https://localhost capacitor://localhost"
@@ -16,14 +16,11 @@
       <header class="app-header">
         <div class="brand">
           <img src="/OCR.png" alt="" class="brand-icon" />
-          <div>
-            <h1>离线文字识别</h1>
-            <p>证件图片本地处理</p>
-          </div>
+          <h1>离线 OCR</h1>
+          <span class="offline-state"><span aria-hidden="true"></span>本地</span>
         </div>
 
         <div class="header-actions">
-          <span class="offline-state"><span aria-hidden="true"></span>离线</span>
           <button
             id="developer-toggle"
             class="icon-button developer-toggle"
@@ -39,39 +36,26 @@
 
       <main>
         <section class="page-section" aria-labelledby="image-title">
-          <p class="section-title" id="image-title">证件图片</p>
+          <div class="section-heading">
+            <p class="section-title" id="image-title">证件图片</p>
+            <span id="image-count" class="count-badge">0 张</span>
+          </div>
           <div class="group-card image-workspace">
             <button id="select-image" class="picker-row" type="button">
               <span class="feature-icon"><i data-lucide="image-plus" aria-hidden="true"></i></span>
               <span class="picker-copy">
                 <strong id="select-label">选择图片</strong>
-                <small id="select-detail">JPG、PNG、WEBP · 最大 25 MB</small>
+                <small id="select-detail">单张或多张，最多 45 张</small>
               </span>
-              <i data-lucide="chevron-right" class="row-chevron" aria-hidden="true"></i>
+              <span class="add-action" aria-hidden="true"><i data-lucide="plus"></i></span>
             </button>
 
-            <div id="preview-shell" class="preview-shell" hidden>
-              <button
-                id="preview-toggle"
-                class="preview-toggle"
-                type="button"
-                aria-label="放大图片预览"
-                aria-expanded="false"
-              >
-                <img id="preview" alt="所选证件图片预览" />
-                <span class="preview-action" aria-hidden="true">
-                  <i data-lucide="maximize-2" class="expand-icon"></i>
-                  <i data-lucide="minimize-2" class="collapse-icon"></i>
-                </span>
-              </button>
-
-              <div class="preview-caption">
-                <div>
-                  <strong id="image-name"></strong>
-                  <span id="image-meta"></span>
-                </div>
-                <button id="remove-image" class="icon-button" type="button" title="移除图片" aria-label="移除图片">
-                  <i data-lucide="x" aria-hidden="true"></i>
+            <div id="preview-region" class="preview-region" hidden>
+              <div id="image-grid" class="image-grid" role="group" aria-label="已选图片"></div>
+              <div class="selection-footer">
+                <span id="selection-summary">已选择 0 张</span>
+                <button id="remove-image" class="icon-button" type="button" title="清空图片" aria-label="清空图片">
+                  <i data-lucide="trash-2" aria-hidden="true"></i>
                 </button>
               </div>
             </div>
@@ -91,12 +75,23 @@
           <p class="section-title">识别结果</p>
           <div class="group-card result-card">
             <div class="card-heading">
-              <h2 id="result-title">全部文字</h2>
-              <button id="copy-all" class="quiet-button" type="button" disabled>
+              <h2 id="result-title">关键信息</h2>
+              <button id="copy-all" class="command-button" type="button" disabled>
                 <i data-lucide="copy" aria-hidden="true"></i>
-                <span>复制全文</span>
+                <span>复制全部</span>
               </button>
             </div>
+            <div class="key-information">
+              <div class="key-row">
+                <span class="key-icon"><i data-lucide="contact-round" aria-hidden="true"></i></span>
+                <span class="key-copy"><small>身份证号</small><strong id="id-summary">未识别到</strong></span>
+              </div>
+              <div class="key-row">
+                <span class="key-icon phone"><i data-lucide="phone" aria-hidden="true"></i></span>
+                <span class="key-copy"><small>剪贴板手机号</small><strong id="clipboard-phone">未识别到</strong></span>
+              </div>
+            </div>
+            <div class="content-heading"><span>全部文字</span><span id="result-count"></span></div>
             <pre class="ocr-output"><code id="ocr-output"></code></pre>
           </div>
         </section>
@@ -114,6 +109,9 @@
                   <i data-lucide="trash-2" aria-hidden="true"></i>
                 </button>
               </div>
+            </div>
+            <div class="log-legend" aria-label="日志指标说明">
+              <span>PSS 实际占用</span><span>Native OCR 内存</span><span>+ 增长 / − 回落</span>
             </div>
             <pre id="session-log" class="session-log" role="log" aria-live="polite"></pre>
           </div>

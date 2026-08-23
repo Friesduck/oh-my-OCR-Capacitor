@@ -41,6 +41,7 @@ function isAvailable(value: number): boolean {
 
 export function formatDuration(value: number): string {
   if (!isAvailable(value)) return "不可用";
+  if (value >= 1_000) return `${(value / 1_000).toFixed(2)} 秒`;
   return `${value < 10 ? value.toFixed(1) : value.toFixed(0)} ms`;
 }
 
@@ -94,18 +95,18 @@ function findSnapshot(result: RecognitionResult, stage: string): MemorySnapshot 
 
 export function memorySnapshotLines(snapshot: MemorySnapshot, label: string): string[] {
   const lines = [
-    `内存·${label}（+${formatDuration(snapshot.elapsedMs)}，采样 ${formatDuration(snapshot.captureCostMs)}）：` +
+    `${label} | 阶段 +${formatDuration(snapshot.elapsedMs)} | 采样 ${formatDuration(snapshot.captureCostMs)} | ` +
       `PSS ${formatKb(snapshot.totalPssKb)}，RSS ${formatKb(snapshot.vmRssKb)}，` +
       `Java ${formatBytes(snapshot.javaHeapUsedBytes)}/${formatBytes(snapshot.javaHeapCommittedBytes)}` +
       `/${formatBytes(snapshot.javaHeapMaxBytes)}，Native 已分配/保留/空闲 ` +
       `${formatBytes(snapshot.nativeHeapAllocatedBytes)}/${formatBytes(snapshot.nativeHeapReservedBytes)}` +
       `/${formatBytes(snapshot.nativeHeapFreeBytes)}`,
-    `  PSS 构成：Java ${formatKb(snapshot.summaryJavaHeapKb)}，Native ` +
+    `构成 | Java ${formatKb(snapshot.summaryJavaHeapKb)}，Native ` +
       `${formatKb(snapshot.summaryNativeHeapKb)}，Graphics ${formatKb(snapshot.summaryGraphicsKb)}，` +
       `Code ${formatKb(snapshot.summaryCodeKb)}，Stack ${formatKb(snapshot.summaryStackKb)}，` +
       `PrivateOther ${formatKb(snapshot.summaryPrivateOtherKb)}，System ` +
       `${formatKb(snapshot.summarySystemKb)}；Swap ${formatKb(snapshot.summaryTotalSwapKb)}`,
-    `  进程页：匿名 RSS ${formatKb(snapshot.rssAnonKb)}，文件 RSS ${formatKb(snapshot.rssFileKb)}，` +
+    `页面 | 匿名 RSS ${formatKb(snapshot.rssAnonKb)}，文件 RSS ${formatKb(snapshot.rssFileKb)}，` +
       `共享 RSS ${formatKb(snapshot.rssShmemKb)}，VmData ${formatKb(snapshot.vmDataKb)}，` +
       `VmSwap ${formatKb(snapshot.vmSwapKb)}，PrivateDirty ${formatKb(snapshot.totalPrivateDirtyKb)}，` +
       `PrivateClean ${formatKb(snapshot.totalPrivateCleanKb)}`,
@@ -113,27 +114,27 @@ export function memorySnapshotLines(snapshot: MemorySnapshot, label: string): st
 
   if (snapshot.deep) {
     lines.push(
-      `  smaps：匿名 PSS ${formatKb(snapshot.smapsPssAnonKb)}，文件 PSS ` +
+      `smaps | 匿名 PSS ${formatKb(snapshot.smapsPssAnonKb)}，文件 PSS ` +
         `${formatKb(snapshot.smapsPssFileKb)}，共享 PSS ${formatKb(snapshot.smapsPssShmemKb)}，` +
         `PrivateDirty ${formatKb(snapshot.smapsPrivateDirtyKb)}，` +
         `PrivateClean ${formatKb(snapshot.smapsPrivateCleanKb)}，SwapPSS ` +
         `${formatKb(snapshot.smapsSwapPssKb)}`,
-      `  映射 PSS：${MAPPING_LABELS.map(
+      `映射 | ${MAPPING_LABELS.map(
         ([key, mappingLabel]) => `${mappingLabel} ${formatKb(snapshot.mappingPssKb[key])}`,
       ).join("，")}`,
-      `  运行状态：线程 ${snapshot.threadCount}，FD ${snapshot.fileDescriptorCount}，` +
+      `状态 | 线程 ${snapshot.threadCount}，FD ${snapshot.fileDescriptorCount}，` +
         `importance ${snapshot.processImportance}，trim ${snapshot.lastTrimLevel}；` +
         `系统可用/总内存 ${formatBytes(snapshot.systemMemory.availableBytes)}` +
         `/${formatBytes(snapshot.systemMemory.totalBytes)}，低内存阈值 ` +
         `${formatBytes(snapshot.systemMemory.thresholdBytes)}，lowMemory=${snapshot.systemMemory.lowMemory}`,
-      `  ART GC：总次数 ${snapshot.gcStats.gcCount}，阻塞次数 ` +
+      `GC | 总次数 ${snapshot.gcStats.gcCount}，阻塞次数 ` +
         `${snapshot.gcStats.blockingGcCount}，累计 ${snapshot.gcStats.gcTimeMs} ms，` +
         `Java 分配/释放 ${formatBytes(snapshot.gcStats.bytesAllocated)}` +
         `/${formatBytes(snapshot.gcStats.bytesFreed)}`,
     );
   }
 
-  if (snapshot.errors.length > 0) lines.push(`  采样降级：${snapshot.errors.join("，")}`);
+  if (snapshot.errors.length > 0) lines.push(`采样降级 | ${snapshot.errors.join("，")}`);
   return lines;
 }
 
@@ -172,17 +173,17 @@ export function recognitionReport(
   const { metrics } = result;
   const modelState = metrics.modelWasLoaded ? "热启动" : "冷启动";
   const bridgeOverheadMs = Math.max(0, frontend.nativeCallWallMs - metrics.nativeTotalMs);
-  const lines = metrics.memorySnapshots.flatMap((snapshot) =>
+  const snapshotLines = metrics.memorySnapshots.flatMap((snapshot) =>
     memorySnapshotLines(snapshot, memoryStageLabel(snapshot.stage, metrics.modelWasLoaded)),
   );
+  const lines: string[] = [];
 
   lines.push(
-    `图片内存：原文件 ${formatBytes(metrics.sourceImageBytes)}，` +
-      `原始 ${metrics.sourceWidth}x${metrics.sourceHeight}，采样倍率 ${metrics.decodeSampleSize}；` +
-      `解码 ${metrics.decodedWidth}x${metrics.decodedHeight} ${formatBytes(metrics.decodedBitmapBytes)}，` +
-      `方向校正后 ${metrics.orientedWidth}x${metrics.orientedHeight} ` +
-      `${formatBytes(metrics.orientedBitmapBytes)}，结果图 ${formatBytes(metrics.resultBitmapBytes)}`,
-    `OCR 输入：maxSideLen=${metrics.ocrMaxSideLen}，检测框 ${metrics.detectionCount}，` +
+    `图片：${metrics.imageCount} 张，原文件共 ${formatBytes(metrics.sourceImageBytes)}，` +
+      `最大原图 ${metrics.sourceWidth}x${metrics.sourceHeight}，最大采样倍率 ${metrics.decodeSampleSize}；` +
+      `解码累计 ${formatBytes(metrics.decodedBitmapBytes)}，方向校正累计 ` +
+      `${formatBytes(metrics.orientedBitmapBytes)}`,
+    `OCR 输入：逐张处理，maxSideLen=${metrics.ocrMaxSideLen}，检测框 ${metrics.detectionCount}，` +
       `识别块 ${metrics.recognitionCount}；模型状态 ${modelState}`,
     `图片处理：读取 ${formatDuration(metrics.imageReadMs)}，` +
       `解码 ${formatDuration(metrics.imageDecodeMs)}，方向校正 ${formatDuration(metrics.orientationMs)}`,
@@ -192,7 +193,10 @@ export function recognitionReport(
     `调用：Kotlin ${formatDuration(metrics.nativeTotalMs)}，` +
       `Bridge/线程约 ${formatDuration(bridgeOverheadMs)}，` +
       `端到端 ${formatDuration(frontend.frontendTotalMs)}`,
-    `结果：${result.textLines.length} 行文字，${result.idNumbers.length} 个有效身份证号`,
+    `结果：${result.textLines.length} 行文字，${result.idNumbers.length} 个有效身份证号，` +
+      `剪贴板手机号${result.clipboardPhone ? "已读取" : "未读取"}`,
+    "内存阶段 | 以下按请求、图片、推理、释放顺序记录",
+    ...snapshotLines,
   );
 
   const baseline = findSnapshot(result, "requestReceived");
@@ -201,12 +205,13 @@ export function recognitionReport(
   const released = findSnapshot(result, "resourcesReleased");
 
   if (beforeInference && afterInference) {
-    lines.push(memoryDeltaLine("单次推理增长", beforeInference, afterInference));
-    const mappingLine = mappingDeltaLine("单次推理映射增长", beforeInference, afterInference);
+    const inferenceLabel = metrics.imageCount > 1 ? `${metrics.imageCount} 张图片推理增长` : "单张推理增长";
+    lines.push(memoryDeltaLine(inferenceLabel, beforeInference, afterInference));
+    const mappingLine = mappingDeltaLine(`${inferenceLabel}·映射`, beforeInference, afterInference);
     if (mappingLine) lines.push(mappingLine);
   }
   if (afterInference && released) {
-    lines.push(memoryDeltaLine("Java 图片资源释放效果", afterInference, released));
+    lines.push(memoryDeltaLine("最后一张图片释放效果", afterInference, released));
   }
   if (!baseline || !released) return { lines };
 
