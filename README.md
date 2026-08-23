@@ -14,7 +14,7 @@ OcrPlugin.kt
 RapidOCR + ONNX Runtime + OpenCV
 ```
 
-- Kotlin 按系统版本申请共享图库的全部图片读取权限：Android 13+ 使用 `READ_MEDIA_IMAGES`，Android 12 及以下使用 `READ_EXTERNAL_STORAGE`。授权后调用系统图库多选并持有 `content://` URI，最多 4 张。
+- 应用首次进入前台且尚未授权时主动申请共享图库的全部图片读取权限：Android 13+ 使用 `READ_MEDIA_IMAGES`，Android 12 及以下使用 `READ_EXTERNAL_STORAGE`。全量授权后不再重复弹窗；选图按钮只检查权限并调用系统图库多选，最多 4 张。
 - 原生 `ClipData` 返回顺序作为唯一顺序，前端缩略图显示 `1～4` 角标，预览、逐张识别和结果分组严格复用同一 URI 数组。
 - 原图不转换为 Base64，也不传入 JavaScript；前端只接收压缩预览和文字结果。
 - `OptimizedOcrEngine` 首次识别时懒加载，并在应用进程存活期间复用。模型先复制到应用 `noBackupFilesDir`，再通过文件路径创建 ONNX Session，避免把完整模型读成 Java `byte[]`；实际 mmap 归类仍以真机 `/proc/self/smaps` 为准。

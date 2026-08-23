@@ -7,6 +7,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
@@ -24,6 +25,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ImageView
 import androidx.activity.result.ActivityResult
+import androidx.core.content.ContextCompat
 import androidx.exifinterface.media.ExifInterface
 import com.example.rapidocrcapacitor.ocr.OptimizedOcrEngine
 import com.example.rapidocrcapacitor.ocr.OptimizedOcrResult
@@ -32,33 +34,15 @@ import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
-import com.getcapacitor.PermissionState
 import com.getcapacitor.annotation.ActivityCallback
 import com.getcapacitor.annotation.CapacitorPlugin
-import com.getcapacitor.annotation.Permission
-import com.getcapacitor.annotation.PermissionCallback
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
-private const val IMAGE_PERMISSION_ALIAS = "images"
-private const val LEGACY_IMAGE_PERMISSION_ALIAS = "legacyImages"
-
-@CapacitorPlugin(
-    name = "NativeOcr",
-    permissions = [
-        Permission(
-            alias = IMAGE_PERMISSION_ALIAS,
-            strings = [Manifest.permission.READ_MEDIA_IMAGES],
-        ),
-        Permission(
-            alias = LEGACY_IMAGE_PERMISSION_ALIAS,
-            strings = [Manifest.permission.READ_EXTERNAL_STORAGE],
-        ),
-    ],
-)
+@CapacitorPlugin(name = "NativeOcr")
 class OcrPlugin : Plugin() {
     private val executor = Executors.newSingleThreadExecutor()
     private val recognitionInProgress = AtomicBoolean(false)
@@ -88,21 +72,11 @@ class OcrPlugin : Plugin() {
             return
         }
 
-        val permissionAlias = imagePermissionAlias()
-        if (getPermissionState(permissionAlias) != PermissionState.GRANTED) {
-            requestPermissionForAlias(permissionAlias, call, "handleImagePermission")
+        if (!hasFullGalleryAccess()) {
+            call.reject("尚未获得全部照片权限，请在系统设置中将照片权限改为允许所有照片")
             return
         }
 
-        openSystemGallery(call)
-    }
-
-    @PermissionCallback
-    private fun handleImagePermission(call: PluginCall) {
-        if (getPermissionState(imagePermissionAlias()) != PermissionState.GRANTED) {
-            call.reject("需要允许访问所有照片；如果只授权了部分照片，请在系统设置中改为允许所有照片")
-            return
-        }
         openSystemGallery(call)
     }
 
@@ -121,10 +95,20 @@ class OcrPlugin : Plugin() {
         }
     }
 
-    private fun imagePermissionAlias(): String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        IMAGE_PERMISSION_ALIAS
+    private fun requiredGalleryPermission(): String = if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+    ) {
+        Manifest.permission.READ_MEDIA_IMAGES
     } else {
-        LEGACY_IMAGE_PERMISSION_ALIAS
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
+    private fun hasFullGalleryAccess(): Boolean {
+        val pluginContext = context ?: return false
+        return ContextCompat.checkSelfPermission(
+            pluginContext,
+            requiredGalleryPermission(),
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     @ActivityCallback

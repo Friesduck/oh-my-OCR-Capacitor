@@ -18,7 +18,7 @@
 - 从全部逐图文字中匹配精确的 `YYYY.MM.DD-YYYY.MM.DD` 或 `YYYY.MM.DD-长期` 有效期限，只校验字符格式，不校验日历值或起止顺序；返回时删除日期中的点，输出为 `YYYYMMDD-YYYYMMDD` 或 `YYYYMMDD-长期`，多项去重后按识别顺序保留。
 - 结果区按身份证号、剪贴板手机号、有效期限三行展示关键信息，有效期限多项用顿号连接；下方用“图片编号 + 行数 + 独立正文带”完整展示逐图 OCR 内容，复制全部包含三项摘要和所有图片文字。
 - 已新增独立的 `design-style-guide.md`，只描述轻量磨砂移动工具界面的视觉基调、tokens、通用组件、动效、响应式和实施清单，不引用设计来源或当前业务实例。
-- Android 配置使用 Java 21、SDK 36、ARM64、R8、资源裁剪和 16 KB 兼容检查；Manifest 显式移除联网权限。图库读取在 Android 13+ 请求 `READ_MEDIA_IMAGES`，Android 12 及以下请求 `READ_EXTERNAL_STORAGE`；Android 14+ 声明部分照片状态，未获得全量权限时拒绝继续并提示用户改为“允许所有照片”。
+- Android 配置使用 Java 21、SDK 36、ARM64、R8、资源裁剪和 16 KB 兼容检查；Manifest 显式移除联网权限。应用首次进入前台且未授权时，由 `MainActivity` 在安全生命周期阶段主动申请图库权限，Android 13+ 请求 `READ_MEDIA_IMAGES`，Android 12 及以下请求 `READ_EXTERNAL_STORAGE`；全量授权后不再弹窗，Android 14+ 若只授权部分照片则提示改为“允许所有照片”，选图插件只做同步检查，避免异步权限回调空指针。
 - GitHub Actions 支持自动临时签名或固定 Secrets，并输出 APK 包体分类报告。
 - 使用根目录现有 `OCR.png` 生成网页图标和 Android 各密度普通/自适应图标。
 - 上一级 Tauri 仓库通过 `/oh ocr Capacitor/` 忽略本项目；本项目应作为独立 Git 仓库管理。
@@ -42,7 +42,7 @@
 - 若优化引擎 10 秒稳定值仍接近 1 GiB 或跨轮持续阶梯上涨，再评估独立 OCR 工作进程并在返回结果后退出进程。
 - 不采用每次启动清应用缓存或识别后直接 `System.gc()` 作为正式方案；它们无法可靠释放 ONNX/OpenCV 原生内存。
 - 通过 GitHub Actions 构建并在 Android 16 真机确认页头已完全避开状态栏和挖孔区域。
-- 在 Android 16 真机首次选图时确认权限弹窗选择“允许所有照片”，再用相机、QQ、微信等写入共享图库的图片验证系统图库可见性；选择 1～4 张并核对角标、预览、OCR 和结果分组顺序完全一致。
+- 在 Android 16 真机清除应用数据或卸载重装，确认首次启动立即出现照片权限框；选择“允许所有照片”后点击选图不闪退，杀进程重开不再弹权限框。再用相机、QQ、微信等写入共享图库的图片验证系统图库可见性；选择 1～4 张并核对角标、预览、OCR 和结果分组顺序完全一致。
 - 另验证 4 张上限、复制全文、严格 18 位身份证号、两种有效期限格式、多期限顿号连接、剪贴板 11 位手机号和全屏预览关闭回收。
 
 ## 工作日志
@@ -59,3 +59,4 @@
 - 2026-08-23 16:47：新增有效期限提取并收紧身份证候选规则；新增 `ValidityPeriodParserTest.kt`，修改 `OcrPlugin.kt`、`IdCardParserTest.kt`、`src/native-ocr.ts`、`src/ui/format.ts`、`src/ui/result-panel.ts`、`src/main.ts`、`src/memory-report.ts`、`index.html`、`src/styles.css`、`README.md`、`design-style-guide.md` 和交接文档；身份证只接受连续 17 位 ASCII 数字加数字或 `X/x` 且不做 OCR 字符修补，有效期限只按两种指定字符格式提取且不校验日期/顺序，结果第三行展示并用顿号连接多项；样式指南重写为无来源引用、无当前业务实例的独立设计规范；已通过身份证/期限正反样例、多值复制样例、11 个 TypeScript 文件语法、26 个 HTML 唯一 ID、CSS 结构、8 项 Kotlin 结构、样式指南禁用词和 `git diff --check` 静态检查，本机无依赖未执行 TypeScript 类型检查、Gradle 单测或 Android 构建，尚待服务器与真机验证。
 - 2026-08-23 17:25：调整有效期限返回格式；修改 `OcrPlugin.kt`、`ValidityPeriodParserTest.kt`、`README.md` 和交接文档；仍从 OCR 原文严格匹配两种带点格式，但返回摘要和复制内容统一删除日期中的点，输出 `YYYYMMDD-YYYYMMDD` 或 `YYYYMMDD-长期`，全部文字仍保留 OCR 原文；未修改用户维护的 `design-style-guide.md`；已通过固定期限、长期期限、去重、Kotlin 结构、Manifest 无媒体/存储权限和 `git diff --check` 静态检查，本机未执行 Gradle 单测或 Android 构建，尚待真机验证。
 - 2026-08-23 17:36：改为申请共享图库全部图片权限并强化多图顺序；修改 `AndroidManifest.xml`、`OcrPlugin.kt`、`src/ui/image-panel.ts`、`src/styles.css`、`README.md`、GitHub Actions 和交接文档；Android 13+ 请求 `READ_MEDIA_IMAGES`，旧系统请求 `READ_EXTERNAL_STORAGE`，Android 14+ 可检测并拒绝部分照片授权；授权后用 `ACTION_PICK` 打开 MediaStore 系统图库，多选返回的 `ClipData` 顺序统一驱动 `1～4` 角标、预览、OCR 与结果分组；云端增加三项图库权限断言；未修改用户维护的 `design-style-guide.md`；已通过 11 个 TypeScript 文件语法、Manifest、Kotlin 权限/顺序链路、CSS 角标、工作流和 `git diff --check` 静态检查，本机未执行 Gradle 编译或真机权限验证。
+- 2026-08-23 18:05：修复点击选图时权限异步回调可能导致的空指针闪退；修改 `MainActivity.kt`、`OcrPlugin.kt`、`README.md` 和交接文档；权限改由 Activity 首次进入 `onPostResume` 且未获全量授权时主动请求，每次 Activity 启动最多请求一次，已全量授权则不再弹窗；Android 14+ 一次请求全量与部分照片状态，但只有 `READ_MEDIA_IMAGES` 获批才放行；选图插件移除 Capacitor 权限别名/回调，只同步检查权限，并对插件 Context 缺失做拒绝兜底；已通过 Kotlin 结构/括号、旧回调残留、Manifest XML/权限范围、GitHub Actions 权限断言和 `git diff --check` 静态检查，尚待服务器构建和 Android 16 真机按清数据首次启动、全量授权、选图、重启流程验证。
